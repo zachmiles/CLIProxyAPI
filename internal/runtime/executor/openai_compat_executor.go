@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	opencodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/opencode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -761,6 +762,9 @@ func (e *OpenAICompatExecutor) Refresh(ctx context.Context, auth *cliproxyauth.A
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
 		return refreshed, err
 	}
+	if opencodeauth.IsConsoleAuth(auth) {
+		return opencodeauth.RefreshAuth(ctx, e.cfg, auth)
+	}
 	if openAICompatAuthHasRefreshToken(auth) {
 		provider := ""
 		if e != nil {
@@ -957,6 +961,13 @@ func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (base
 	if auth.Attributes != nil {
 		baseURL = strings.TrimSpace(auth.Attributes["base_url"])
 		apiKey = strings.TrimSpace(auth.Attributes["api_key"])
+	}
+	// File-backed OAuth credentials (OpenCode Console) keep both in metadata.
+	if baseURL == "" {
+		baseURL, _ = auth.Metadata["base_url"].(string)
+	}
+	if apiKey == "" {
+		apiKey, _ = auth.Metadata["access_token"].(string)
 	}
 	return
 }
