@@ -331,6 +331,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 				"email":      tokenStorage.Email,
 				"account_id": tokenStorage.AccountID,
 				"plan_type":  planType,
+				"websockets": true,
 			},
 			Attributes: map[string]string{
 				"plan_type": planType,
