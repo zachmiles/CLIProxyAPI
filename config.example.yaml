@@ -286,6 +286,8 @@ client:
     # Default false. Applies to both OAuth and API-key credentials across providers.
     # Legacy provider paths migrate here; this path wins conflicts, including explicit false.
     optimize-multi-agent-v2: false
+    # When true, Codex clients list only OpenAI-owned models (default: false lists every model).
+    openai-models-only: false
 
 # Shared upstream behavior applies to OAuth and API-key credentials.
 upstream:

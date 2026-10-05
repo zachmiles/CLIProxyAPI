@@ -384,3 +384,27 @@ func TestCodexClientModelsApplyPatchRouting(t *testing.T) {
 	assertPatch(t, withoutManager.codexClientModelsResponse("0.153.4"), "catalog-patch-synthetic", nil)
 
 }
+
+func TestCodexClientModelsResponseOpenAIModelsOnly(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClient("codex-openai-only-test-codex", "codex", []*registry.ModelInfo{{ID: "openai-only-test-gpt", OwnedBy: "openai"}})
+	modelRegistry.RegisterClient("codex-openai-only-test-claude", "claude", []*registry.ModelInfo{{ID: "openai-only-test-claude", OwnedBy: "anthropic"}})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient("codex-openai-only-test-codex")
+		modelRegistry.UnregisterClient("codex-openai-only-test-claude")
+	})
+
+	base := handlers.NewBaseAPIHandlers(&config.SDKConfig{}, nil)
+	handler := NewOpenAIAPIHandler(base)
+	for _, enabled := range []bool{false, true} {
+		base.Cfg.Client.Codex.OpenAIModelsOnly = enabled
+		slugs := map[string]bool{}
+		for _, model := range handler.codexClientModelsResponse()["models"].([]map[string]any) {
+			slug, _ := model["slug"].(string)
+			slugs[slug] = true
+		}
+		if !slugs["openai-only-test-gpt"] || slugs["openai-only-test-claude"] == enabled {
+			t.Fatalf("openai-models-only=%t listed gpt=%t claude=%t", enabled, slugs["openai-only-test-gpt"], slugs["openai-only-test-claude"])
+		}
+	}
+}

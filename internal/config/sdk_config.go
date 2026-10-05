@@ -88,6 +88,10 @@ type CodexClientConfig struct {
 	// EnableApplyPatch advertises freeform apply_patch only for supported models.
 	// Default false clears the capability regardless of template metadata.
 	EnableApplyPatch bool `yaml:"enable-apply-patch" json:"enable-apply-patch"`
+
+	// OpenAIModelsOnly limits the Codex client model list to OpenAI-owned models.
+	// Default false lists every available model.
+	OpenAIModelsOnly bool `yaml:"openai-models-only" json:"openai-models-only"`
 }
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.

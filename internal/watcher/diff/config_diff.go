@@ -152,6 +152,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Client.Codex.OptimizeMultiAgentV2 != newCfg.Client.Codex.OptimizeMultiAgentV2 {
 		changes = append(changes, fmt.Sprintf("client.codex.optimize-multi-agent-v2: %t -> %t", oldCfg.Client.Codex.OptimizeMultiAgentV2, newCfg.Client.Codex.OptimizeMultiAgentV2))
 	}
+	if oldCfg.Client.Codex.OpenAIModelsOnly != newCfg.Client.Codex.OpenAIModelsOnly {
+		changes = append(changes, fmt.Sprintf("client.codex.openai-models-only: %t -> %t", oldCfg.Client.Codex.OpenAIModelsOnly, newCfg.Client.Codex.OpenAIModelsOnly))
+	}
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
 	}

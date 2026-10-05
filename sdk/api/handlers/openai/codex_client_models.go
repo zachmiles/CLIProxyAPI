@@ -15,8 +15,18 @@ func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) ma
 	if h != nil && h.Cfg != nil && h.Cfg.Client.Codex.EnableApplyPatch {
 		applyPatchCapabilityForModel = h.SupportsApplyPatchModel
 	}
+	models := h.Models()
+	if h != nil && h.Cfg != nil && h.Cfg.Client.Codex.OpenAIModelsOnly {
+		openAIModels := make([]map[string]any, 0, len(models))
+		for _, model := range models {
+			if model["owned_by"] == "openai" {
+				openAIModels = append(openAIModels, model)
+			}
+		}
+		models = openAIModels
+	}
 	modelRegistry := registry.GetGlobalRegistry()
-	return codexmodels.BuildResponseForClientWithToolCapabilities(h.Models(), modelRegistry.GetModelProviders, modelRegistry.GetResponsesWebSearchCapability, applyPatchCapabilityForModel, optimizeMultiAgentV2, version)
+	return codexmodels.BuildResponseForClientWithToolCapabilities(models, modelRegistry.GetModelProviders, modelRegistry.GetResponsesWebSearchCapability, applyPatchCapabilityForModel, optimizeMultiAgentV2, version)
 }
 
 // CodexClientModelsResponse builds a Codex client model response.
