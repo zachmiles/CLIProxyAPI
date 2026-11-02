@@ -58,6 +58,10 @@ var claudeCodeSubclientByEntrypoint = map[string]string{
 	"ssh-remote":                "claude-ssh-remote",
 	"claude-coworker":           "claude-coworker",
 	"claude-coworker-terminal":  "claude-coworker-terminal",
+	// OpenCode and T3 Code label the Claude Code they run through the Agent SDK
+	// with their own names (CLAUDE_CODE_ENTRYPOINT=opencode / t3-code).
+	"opencode": "opencode",
+	"t3-code":  "t3-code",
 }
 
 // Only product surfaces with verified 2.1.220+ wire behavior are eligible for
@@ -68,6 +72,9 @@ var nativeClaudeEntrypoints = map[string]bool{
 	"sdk-cli":       true,
 	"sdk-ts":        true,
 	"claude-vscode": true,
+	// Same Agent SDK wire shape as sdk-ts; only the entrypoint label differs.
+	"opencode": true,
+	"t3-code":  true,
 }
 
 type claudeCodeHelperShape uint8
