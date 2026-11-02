@@ -990,6 +990,59 @@ func TestConvertCodexResponseToClaude_StreamWebSearchCallReusesFallbackToolUseID
 	}
 }
 
+func TestConvertCodexResponseToClaude_StreamWebSearchCallActionSources(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{
+		"tools":[{"type":"web_search_20250305","name":"web_search"}],
+		"messages":[{"role":"user","content":"search xai docs"}]
+	}`)
+	var param any
+
+	chunks := [][]byte{
+		[]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4"}}`),
+		[]byte(`data: {"type":"response.output_item.added","item":{"id":"ws_123","type":"web_search_call","status":"in_progress"}}`),
+		[]byte(`data: {"type":"response.output_item.done","item":{"id":"ws_123","type":"web_search_call","status":"completed","action":{"type":"search","query":"xAI web search docs","sources":[{"type":"url","url":"https://docs.x.ai/developers/tools/web-search","title":"xAI Docs"},{"type":"url","url":"https://example.com/notitle"},{"type":"url","url":""},{"type":"url","url":"   "}]}}}`),
+		[]byte(`data: {"type":"response.completed","response":{"stop_reason":"stop","usage":{"input_tokens":5,"output_tokens":10}}}`),
+	}
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		outputs = append(outputs, ConvertCodexResponseToClaude(ctx, "", originalRequest, nil, chunk, &param)...)
+	}
+
+	var webSearchResultBlock gjson.Result
+	for _, out := range outputs {
+		for _, line := range strings.Split(string(out), "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := gjson.Parse(strings.TrimPrefix(line, "data: "))
+			if data.Get("type").String() == "content_block_start" && data.Get("content_block.type").String() == "web_search_tool_result" {
+				webSearchResultBlock = data.Get("content_block")
+			}
+		}
+	}
+
+	if !webSearchResultBlock.Exists() {
+		t.Fatalf("expected web_search_tool_result block in stream output")
+	}
+	content := webSearchResultBlock.Get("content").Array()
+	if len(content) != 2 {
+		t.Fatalf("web_search_tool_result.content length = %d, want 2; raw: %s", len(content), webSearchResultBlock.Get("content").Raw)
+	}
+	if got := content[0].Get("url").String(); got != "https://docs.x.ai/developers/tools/web-search" {
+		t.Errorf("content[0].url = %q, want https://docs.x.ai/developers/tools/web-search", got)
+	}
+	if got := content[0].Get("title").String(); got != "xAI Docs" {
+		t.Errorf("content[0].title = %q, want xAI Docs", got)
+	}
+	if got := content[1].Get("url").String(); got != "https://example.com/notitle" {
+		t.Errorf("content[1].url = %q, want https://example.com/notitle", got)
+	}
+	if got := content[1].Get("title").String(); got != "https://example.com/notitle" {
+		t.Errorf("content[1].title = %q, want https://example.com/notitle (fallback to url)", got)
+	}
+}
+
 func TestConvertCodexResponseToClaude_ShortensLongToolUseIDs(t *testing.T) {
 	longCallID := "call_" + strings.Repeat("a", 62)
 	if len(longCallID) <= 64 {
@@ -1185,6 +1238,70 @@ func TestConvertCodexResponseToClaudeNonStream_WebSearchDedupesEmptyOpenPageItem
 	}
 	if !strings.Contains(string(out), "weather") {
 		t.Fatalf("expected populated query item to be kept: %s", string(out))
+	}
+}
+
+func TestConvertCodexResponseToClaudeNonStream_WebSearchCallActionSources(t *testing.T) {
+	ctx := context.Background()
+	originalRequest := []byte(`{"tools":[{"type":"web_search_20250305","name":"web_search"}],"messages":[{"role":"user","content":"search xai docs"}]}`)
+	response := []byte(`{
+		"type":"response.completed",
+		"response":{
+			"id":"resp_1",
+			"model":"grok-4",
+			"stop_reason":"stop",
+			"usage":{"input_tokens":5,"output_tokens":10},
+			"output":[
+				{
+					"type":"web_search_call",
+					"id":"ws_123",
+					"status":"completed",
+					"action":{
+						"type":"search",
+						"query":"xAI web search docs",
+						"sources":[
+							{"type":"url","url":"https://docs.x.ai/developers/tools/web-search","title":"xAI Docs"},
+							{"type":"url","url":"https://example.com/notitle"},
+							{"type":"url","url":""},
+							{"type":"url","url":"   "}
+						]
+					}
+				},
+				{
+					"type":"message",
+					"content":[{"type":"output_text","text":"here are the docs"}]
+				}
+			]
+		}
+	}`)
+	out := ConvertCodexResponseToClaudeNonStream(ctx, "", originalRequest, nil, response, nil)
+	parsed := gjson.ParseBytes(out)
+	var resultContent gjson.Result
+	parsed.Get("content").ForEach(func(_, block gjson.Result) bool {
+		if block.Get("type").String() == "web_search_tool_result" {
+			resultContent = block.Get("content")
+			return false
+		}
+		return true
+	})
+	if !resultContent.Exists() {
+		t.Fatalf("missing web_search_tool_result in non-stream content: %s", string(out))
+	}
+	contentArray := resultContent.Array()
+	if len(contentArray) != 2 {
+		t.Fatalf("web_search_tool_result content length = %d, want 2; raw: %s", len(contentArray), resultContent.Raw)
+	}
+	if got := contentArray[0].Get("url").String(); got != "https://docs.x.ai/developers/tools/web-search" {
+		t.Errorf("content[0].url = %q, want https://docs.x.ai/developers/tools/web-search", got)
+	}
+	if got := contentArray[0].Get("title").String(); got != "xAI Docs" {
+		t.Errorf("content[0].title = %q, want xAI Docs", got)
+	}
+	if got := contentArray[1].Get("url").String(); got != "https://example.com/notitle" {
+		t.Errorf("content[1].url = %q, want https://example.com/notitle", got)
+	}
+	if got := contentArray[1].Get("title").String(); got != "https://example.com/notitle" {
+		t.Errorf("content[1].title = %q, want https://example.com/notitle (fallback to url)", got)
 	}
 }
 
@@ -1926,5 +2043,65 @@ func TestExtractResponsesUsage(t *testing.T) {
 				t.Fatalf("cache_write_tokens = %d, want %d", cacheWrite, tt.wantCacheWriteTokens)
 			}
 		})
+	}
+}
+
+func TestConvertCodexResponseToClaude_RestoresLongMidConversationToolAdditionName(t *testing.T) {
+	// Two >64-char MCP tools that share the same post-"__" suffix so the mid-conversation
+	// tool_addition collides with the top-level tool and receives a "_1" suffix.
+	topLongMCPTool := "mcp__alpha_very_long_server_name_for_testing__deliver_final_subagent_handback_report"
+	midLongMCPTool := "mcp__bravo_very_long_server_name_for_testing__deliver_final_subagent_handback_report"
+	// Use JSON Unicode escape \u005f in "tool\u005faddition" to cover escaped JSON tokens too.
+	originalRequest := []byte(`{
+		"model": "gpt-6.1-sol",
+		"tools": [{"name": "` + topLongMCPTool + `", "input_schema": {"type": "object"}}],
+		"messages": [
+			{"role": "user", "content": "hi"},
+			{
+				"role": "system",
+				"content": [
+					{
+						"type": "tool\u005faddition",
+						"tool": {
+							"type": "tool_definition",
+							"definition": {
+								"name": "` + midLongMCPTool + `",
+								"description": "Long MCP tool added mid-conversation",
+								"input_schema": {"type": "object"}
+							}
+						}
+					}
+				]
+			}
+		]
+	}`)
+
+	translatedReq, err := ConvertClaudeRequestToCodex("gpt-6.1-sol", originalRequest, false)
+	if err != nil {
+		t.Fatalf("ConvertClaudeRequestToCodex returned error: %v", err)
+	}
+	topShortName := gjson.GetBytes(translatedReq, "tools.0.name").String()
+	midShortName := gjson.GetBytes(translatedReq, "input.1.tools.0.name").String()
+	if topShortName == "" || midShortName == "" || topShortName == midShortName {
+		t.Fatalf("expected distinct shortened names for colliding MCP tools, got top=%q mid=%q", topShortName, midShortName)
+	}
+
+	// 1. Streaming response restoration
+	var param any
+	addedEvent := []byte(fmt.Sprintf(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":%q,"arguments":""}}`, midShortName))
+	chunks := ConvertCodexResponseToClaude(context.Background(), "gpt-6.1-sol", originalRequest, nil, addedEvent, &param)
+	joined := string(bytes.Join(chunks, nil))
+	if !strings.Contains(joined, `"name":"`+midLongMCPTool+`"`) {
+		t.Fatalf("streaming response did not restore long mid-conversation tool name %q, got: %s", midLongMCPTool, joined)
+	}
+
+	// 2. Non-streaming response restoration
+	completedEvent := []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-6.1-sol","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":%q,"arguments":"{}"},{"type":"function_call","id":"fc_2","call_id":"call_2","name":%q,"arguments":"{}"}],"usage":{"input_tokens":10,"output_tokens":5}}}`, topShortName, midShortName))
+	nonStreamOut := ConvertCodexResponseToClaudeNonStream(context.Background(), "gpt-6.1-sol", originalRequest, nil, completedEvent, nil)
+	if got := gjson.GetBytes(nonStreamOut, "content.0.name").String(); got != topLongMCPTool {
+		t.Fatalf("non-streaming response content.0.name = %q, want %q; body=%s", got, topLongMCPTool, nonStreamOut)
+	}
+	if got := gjson.GetBytes(nonStreamOut, "content.1.name").String(); got != midLongMCPTool {
+		t.Fatalf("non-streaming response content.1.name = %q, want %q; body=%s", got, midLongMCPTool, nonStreamOut)
 	}
 }
