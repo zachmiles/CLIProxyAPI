@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	opencodeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/opencode"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -412,8 +413,11 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			out = append(out, a)
 			createdEntries++
 		}
-		// Fallback: create entry without API key if no APIKeyEntries
-		if createdEntries == 0 {
+		// Fallback: create entry without API key if no APIKeyEntries. The
+		// opencode-go group only lists the models its Console sign-in serves; a
+		// keyless entry would reach Go with no token or session header, so a
+		// failover to it could only fail.
+		if createdEntries == 0 && !strings.EqualFold(providerName, opencodeauth.Provider) {
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 			id, token := idGen.Next(idKind, base)
 			attrs := map[string]string{

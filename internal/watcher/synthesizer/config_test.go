@@ -1495,3 +1495,31 @@ func TestConfigSynthesizer_EmptyConnectionPoolBlockOptsIn(t *testing.T) {
 		t.Fatalf("keyless OpenAI-compatible entry lost its group connection-pool block: %+v", keylessAuths)
 	}
 }
+
+// The opencode-go group only lists the models the OpenCode Console sign-in
+// serves. A keyless entry for it reaches Go without a token or session header,
+// so a failover to it can only fail; keyed entries still synthesize.
+func TestConfigSynthesizer_OpenCodeGoGroupHasNoKeylessEntry(t *testing.T) {
+	synthesize := func(keys []config.OpenAICompatibilityAPIKey) []*coreauth.Auth {
+		auths, err := NewConfigSynthesizer().Synthesize(&SynthesisContext{
+			Config: &config.Config{OpenAICompatibility: []config.OpenAICompatibility{
+				{Name: "opencode-go", BaseURL: "https://opencode.ai/zen/go/v1", APIKeyEntries: keys},
+				{Name: "local-ollama", BaseURL: "http://127.0.0.1:11434/v1"},
+			}},
+			Now:         time.Now(),
+			IDGenerator: NewStableIDGenerator(),
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return auths
+	}
+	auths := synthesize(nil)
+	if len(auths) != 1 || auths[0].Attributes["compat_name"] != "local-ollama" {
+		t.Fatalf("keyless opencode-go entry synthesized or other keyless group lost: %+v", auths)
+	}
+	auths = synthesize([]config.OpenAICompatibilityAPIKey{{APIKey: "sk-go"}})
+	if len(auths) != 2 {
+		t.Fatalf("keyed opencode-go entry must still synthesize, got %d auths", len(auths))
+	}
+}
