@@ -1,9 +1,12 @@
 package cliproxy
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -70,6 +73,7 @@ func (s *Service) InventorySnapshot() modelinventory.Snapshot {
 			snapshot.Candidates = append(snapshot.Candidates, candidate)
 		}
 	}
+	snapshot.Candidates = projectClaudeInventoryAliases(snapshot.Candidates)
 	return snapshot
 }
 
@@ -154,15 +158,12 @@ func (s *Service) setInventory(id string, epoch uint64, cfg *config.Config, cand
 			}
 			candidate.Name = model.DisplayName
 		}
-		if candidate.Channel != "claude" || isOpenCodeClaudeAlias(candidate.ID) {
-			out = append(out, candidate)
-		}
+		out = append(out, candidate)
 	}
 	d.accounts[id] = inventoryAccount{epoch: epoch, cfg: cfg, settled: true, candidates: out}
 }
 
 // These are the model IDs understood by OpenCode's claude-agent provider.
-// The existing proxy OAuth/config routing provides their Anthropic targets.
 func isOpenCodeClaudeAlias(id string) bool {
 	switch id {
 	case "opus", "fable", "sonnet", "haiku":
@@ -170,6 +171,70 @@ func isOpenCodeClaudeAlias(id string) bool {
 	}
 	return false
 }
+
+var claudeInventoryUpstreamID = regexp.MustCompile(`^claude-(opus|fable|sonnet|haiku)-([0-9]+)-([0-9]+)(?:-([0-9]{8}))?$`)
+
+// projectClaudeInventoryAliases selects across the complete snapshot, before
+// consulting Published. OpenCode chooses the newest upstream even if excluded.
+// Keep every credential for the winning ID so availability and rule flags
+// still reflect credential overrides. This changes inventory, not routing.
+func projectClaudeInventoryAliases(candidates []modelinventory.Candidate) []modelinventory.Candidate {
+	type upstream struct {
+		id, date     string
+		major, minor int
+	}
+	configured := make(map[string]bool)
+	newest := make(map[string]upstream)
+	for _, candidate := range candidates {
+		if candidate.Channel != "claude" {
+			continue
+		}
+		id := candidate.ID
+		if isOpenCodeClaudeAlias(id) {
+			configured[id] = true
+			continue
+		}
+		match := claudeInventoryUpstreamID.FindStringSubmatch(id)
+		if match == nil {
+			continue
+		}
+		family, date := match[1], match[4]
+		major, errMajor := strconv.Atoi(match[2])
+		minor, errMinor := strconv.Atoi(match[3])
+		if errMajor != nil || errMinor != nil {
+			continue
+		}
+		current := newest[family]
+		// For matching versions, an undated ID beats any dated twin.
+		dateOrder := cmp.Compare(date, current.date)
+		if date == "" || current.date == "" {
+			dateOrder = -dateOrder
+		}
+		if current.id == "" || cmp.Or(cmp.Compare(major, current.major), cmp.Compare(minor, current.minor), dateOrder, cmp.Compare(id, current.id)) > 0 {
+			newest[family] = upstream{id: id, date: date, major: major, minor: minor}
+		}
+	}
+	aliases := make(map[string]string, len(newest))
+	for family, upstream := range newest {
+		if !configured[family] {
+			aliases[upstream.id] = family
+		}
+	}
+	out := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.Channel == "claude" && !isOpenCodeClaudeAlias(candidate.ID) {
+			family := aliases[candidate.ID]
+			if family == "" {
+				continue
+			}
+			candidate.RuleID, candidate.ID = candidate.ID, family
+			candidate.RuleIDs = nil
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
 func inventoryCredentialRules(auth *coreauth.Auth, inheritsChannel bool) []string {
 	if rules := strings.TrimSpace(auth.Attributes["excluded_models"]); rules != "" {
 		return strings.Split(rules, ",")

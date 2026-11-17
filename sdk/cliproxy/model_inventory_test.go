@@ -15,6 +15,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	request "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -112,11 +114,15 @@ func TestModelInventoryAgreesWithListingAndRouting(t *testing.T) {
 					seen[channel+"/"+id] = true
 					routes := false
 					for _, a := range auths[channel] {
-						if !GlobalModelRegistry().ClientSupportsModel(a.ID, id) {
+						route := id
+						if channel == "claude" && id != "opus" {
+							route = row.Get("ruleID").String()
+						}
+						if !GlobalModelRegistry().ClientSupportsModel(a.ID, route) {
 							continue
 						}
 						opts := request.Options{Metadata: map[string]any{request.PinnedAuthMetadataKey: a.ID}}
-						_, errExecute := s.coreManager.Execute(t.Context(), []string{a.Provider}, request.Request{Model: id}, opts)
+						_, errExecute := s.coreManager.Execute(t.Context(), []string{a.Provider}, request.Request{Model: route}, opts)
 						routes = routes || errExecute == nil
 					}
 					on := row.Get("on").Bool()
@@ -201,24 +207,129 @@ func TestInventoryReviewUsesPublishedConfigAndAliasOrder(t *testing.T) {
 	}
 }
 
-func TestInventoryReviewClaudeAliasJSON(t *testing.T) {
-	const upstream = "claude-opus-4-7"
-	cfg := &config.Config{OAuthModelAlias: map[string][]config.OAuthModelAlias{
-		"claude": {{Name: upstream, Alias: "opus"}, {Name: "claude-opus-4-6", Alias: "custom-opus"}},
-	}}
-	s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
-	registerDiscoveryEngineTestAuth(t, s, "claude")
-	h := management.NewHandler(cfg, "", s.coreManager)
-	h.SetModelInventorySource(s)
-	router := gin.New()
-	router.GET("/inventory", h.GetModelInventory)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/inventory", nil))
-	rows := ojson.ParseBytes(rec.Body.Bytes()).Get("models").Array()
-	if len(rows) != 1 || rows[0].Get("id").String() != "opus" || rows[0].Get("ruleID").String() != upstream || rows[0].Get("providerID").String() != "claude-agent" {
-		t.Fatalf("Claude inventory did not expose only the OpenCode alias: got %d rows", len(rows))
+func TestInventoryClaudeAgentAliases(t *testing.T) {
+	const newestOpus, olderOpus = "claude-opus-5-5", "claude-opus-4-7"
+	for _, tc := range []struct {
+		name        string
+		exclusion   string
+		configAlias bool
+		onlyOpus    bool
+		versions    bool
+	}{
+		{name: "raw upstreams"},
+		{name: "newest opus excluded", exclusion: newestOpus},
+		{name: "older opus excluded", exclusion: olderOpus},
+		{name: "family absent", onlyOpus: true},
+		{name: "numeric versions and dated twins", versions: true},
+		{name: "configured alias wins", configAlias: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := map[string]string{
+				"opus": newestOpus, "fable": "claude-fable-5-2", "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-5-5",
+			}
+			cfg := &config.Config{}
+			if tc.exclusion != "" {
+				cfg.OAuthExcludedModels = map[string][]string{"claude": {tc.exclusion}}
+			}
+			if tc.configAlias {
+				want["opus"] = olderOpus
+				cfg.OAuthModelAlias = map[string][]config.OAuthModelAlias{
+					"claude": {{Name: olderOpus, Alias: "opus"}, {Name: "claude-opus-4-6", Alias: "custom-opus"}},
+				}
+			}
+			if tc.onlyOpus {
+				want = map[string]string{"opus": newestOpus}
+				cfg.Models.Discovery = map[string]registry.ModelDiscovery{"claude": {Mode: "live"}}
+			}
+			if tc.versions {
+				want = map[string]string{"opus": "claude-opus-10-10"}
+				cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "fixture", Models: []config.ClaudeModel{
+					{Name: "claude-opus-10-10-20261117"},
+					{Name: "claude-opus-10-10"},
+					{Name: "claude-opus-10-9"},
+					{Name: "claude-opus-9-99"},
+				}}}
+			}
+			s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+			s.coreManager.SetConfig(cfg)
+			s.coreManager.SetOAuthModelAlias(cfg.OAuthModelAlias)
+			auth := registerDiscoveryEngineTestAuth(t, s, "claude")
+			if tc.versions {
+				auth.Attributes["api_key"] = "fixture"
+				auth, err := s.coreManager.Update(t.Context(), auth)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.completeModelRegistrationForAuth(t.Context(), auth)
+			}
+			if tc.onlyOpus {
+				discoveryTestRunner(t, s, auth, func(context.Context, *config.Config, *coreauth.Auth) ([]discoveredModel, error) {
+					return []discoveredModel{{ID: newestOpus, DisplayName: "Fixture Opus", ContextTokens: 123456, Efforts: []string{"high"}}}, nil
+				})()
+			}
+			s.coreManager.RegisterExecutor(inventoryClaudeTestExecutor{mockBatchTestExecutor{provider: "claude"}})
+			h := management.NewHandler(cfg, "", s.coreManager)
+			h.SetModelInventorySource(s)
+			router := gin.New()
+			router.GET("/inventory", h.GetModelInventory)
+			router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, s.coreManager)).ClaudeMessages)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/inventory", nil))
+			rows := ojson.ParseBytes(rec.Body.Bytes()).Get("models").Array()
+			if rec.Code != http.StatusOK || len(rows) != len(want) {
+				t.Errorf("inventory HTTP %d: got %d Claude rows, want %d: %s", rec.Code, len(rows), len(want), rec.Body.String())
+			}
+			for _, row := range rows {
+				id, ruleID := row.Get("id").String(), row.Get("ruleID").String()
+				if upstream, ok := want[id]; !ok || upstream != ruleID || row.Get("providerID").String() != "claude-agent" {
+					t.Fatalf("unexpected or duplicate Claude alias row: %s", row.Raw)
+				}
+				delete(want, id)
+				routeID := ruleID
+				if tc.configAlias && id == "opus" {
+					routeID = id // Existing proxy aliases are requested by alias.
+				}
+				message := ojson.NewDocString(`{"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+				if err := message.Set("model", routeID); err != nil {
+					t.Fatal(err)
+				}
+				msg := httptest.NewRecorder()
+				router.ServeHTTP(msg, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(message.String())))
+				listed := GlobalModelRegistry().ClientSupportsModel(auth.ID, routeID)
+				routed := msg.Code == http.StatusOK && ojson.GetBytes(msg.Body.Bytes(), "model").String() == ruleID
+				wantOn := ruleID != tc.exclusion
+				if on := row.Get("on").Bool(); on != wantOn || on != (listed && routed) {
+					t.Errorf("%s: on=%v, want %v; listed=%v, response=%d %s", id, on, wantOn, listed, msg.Code, msg.Body.String())
+				}
+				blocks := row.Get("blockedBy").Array()
+				if wantOn && len(blocks) != 0 || !wantOn && (len(blocks) != 1 || blocks[0].Get("pattern").String() != tc.exclusion || blocks[0].Get("source").String() != "rules") {
+					t.Errorf("%s: unexpected blockedBy: %s", id, row.Get("blockedBy").Raw)
+				}
+				if !row.Get("followsRules").Bool() || row.Get("overrideOn").Bool() {
+					t.Errorf("%s: unexpected rule flags: %s", id, row.Raw)
+				}
+				if tc.onlyOpus && (row.Get("name").String() != "Fixture Opus" || row.Get("limits.context").Int() != 123456 || row.Get("efforts.0").String() != "high") {
+					t.Errorf("synthesized row lost upstream metadata: %s", row.Raw)
+				}
+				if id == "opus" {
+					t.Log(row.Raw)
+				}
+			}
+			if len(want) != 0 {
+				t.Errorf("missing Claude aliases: %v", want)
+			}
+		})
 	}
-	t.Log(rows[0].Raw)
+}
+
+type inventoryClaudeTestExecutor struct{ mockBatchTestExecutor }
+
+func (inventoryClaudeTestExecutor) Execute(_ context.Context, _ *coreauth.Auth, req request.Request, _ request.Options) (request.Response, error) {
+	doc := ojson.NewDocString(`{"type":"message","role":"assistant","content":[]}`)
+	if err := doc.Set("model", req.Model); err != nil {
+		return request.Response{}, err
+	}
+	return request.Response{Payload: doc.Bytes()}, nil
 }
 
 func TestInventoryReloadWaitsForCompleteGeneration(t *testing.T) {
