@@ -11,7 +11,7 @@
 //	--auths-dir       <path>  Directory containing auth JSON files (default: config auth-dir)
 //	--config          <path>  Config file path                 (default: "config.yaml")
 //	--output          <path>  Output JSON file path             (default: "codex_client_models.json")
-//	--client-version <ver>   Codex client_version query value  (default: "0.154.0")
+//	--client-version <ver>   Codex client_version query value
 //	--pretty                 Pretty-print the output JSON      (default: true)
 package main
 
@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +30,7 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	codexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/codexlisting"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -41,11 +41,6 @@ import (
 )
 
 const (
-	codexModelsBaseURL       = "https://chatgpt.com/backend-api/codex"
-	codexModelsPath          = "/models"
-	defaultClientVersion     = "0.159.0"
-	defaultCodexUserAgent    = "codex_cli_rs/0.159.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9"
-	defaultCodexOriginator   = "codex_cli_rs"
 	accessTokenRefreshLeeway = 30 * time.Second
 	baselineModelSlug        = "gpt-5.5"
 	baselineModelVisibility  = "list"
@@ -66,7 +61,7 @@ func main() {
 	flag.StringVar(&authsDir, "auths-dir", "", "Directory containing auth JSON files (overrides config auth-dir)")
 	flag.StringVar(&configPath, "config", "", "Configure File Path")
 	flag.StringVar(&outputPath, "output", "codex_client_models.json", "Output JSON file path")
-	flag.StringVar(&clientVersion, "client-version", defaultClientVersion, "Codex client_version query value")
+	flag.StringVar(&clientVersion, "client-version", codexlisting.ClientVersion, "Codex client_version query value")
 	flag.BoolVar(&pretty, "pretty", true, "Pretty-print the output JSON")
 	flag.Parse()
 	authsDirOverridden := false
@@ -252,25 +247,16 @@ func ensureAccessToken(ctx context.Context, store *sdkauth.FileTokenStore, auth 
 }
 
 func fetchModels(ctx context.Context, auth *coreauth.Auth, accessToken, clientVersion string) ([]byte, int, error) {
-	modelsURL, errURL := codexModelsURL(clientVersion)
-	if errURL != nil {
-		return nil, 0, errURL
+	var accountID string
+	var attrs map[string]string
+	if auth != nil {
+		accountID = metaStringValue(auth.Metadata, "account_id")
+		attrs = auth.Attributes
 	}
 
-	httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	httpReq, errReq := codexlisting.NewRequest(ctx, codexlisting.Endpoint, clientVersion, accessToken, accountID, attrs)
 	if errReq != nil {
 		return nil, 0, errReq
-	}
-	httpReq.Close = true
-	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
-	httpReq.Header.Set("Originator", defaultCodexOriginator)
-	httpReq.Header.Set("User-Agent", defaultCodexUserAgent)
-	if accountID := metaStringValue(auth.Metadata, "account_id"); accountID != "" {
-		httpReq.Header.Set("Chatgpt-Account-Id", accountID)
-	}
-	if auth != nil {
-		util.ApplyCustomHeadersFromAttrs(httpReq, auth.Attributes)
 	}
 
 	httpClient := &http.Client{}
@@ -377,16 +363,7 @@ func ensureBaselineModel(raw []byte) ([]byte, int, error) {
 }
 
 func codexModelsURL(clientVersion string) (string, error) {
-	u, err := url.Parse(codexModelsBaseURL + codexModelsPath)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(clientVersion) != "" {
-		q := u.Query()
-		q.Set("client_version", strings.TrimSpace(clientVersion))
-		u.RawQuery = q.Encode()
-	}
-	return u.String(), nil
+	return codexlisting.URL(codexlisting.Endpoint, clientVersion)
 }
 
 func countModels(raw []byte) (int, error) {
