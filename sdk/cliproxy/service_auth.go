@@ -479,6 +479,9 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 		auth = current
 	}
 	s.cancelStaleAntigravityProbes(auth.ID)
+	if channel := discoveryChannelForAuth(auth); discoveryEnabled(discoverySettings(s.currentConfig(), channel).Mode) {
+		s.invalidateDiscoveryAccount(auth.ID)
+	}
 	return auth
 }
 
@@ -655,6 +658,8 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	// republish its cached models after the registry has been cleared.
 	s.coreManager.Remove(ctx, id)
 	GlobalModelRegistry().UnregisterClient(id)
+	s.removeInventory(id)
+	s.invalidateDiscoveryAccount(id)
 	s.cancelStaleAntigravityProbes(id)
 	if strings.EqualFold(provider, "codex") {
 		executor.CloseCodexWebsocketSessionsForAuthID(id, "auth_removed")

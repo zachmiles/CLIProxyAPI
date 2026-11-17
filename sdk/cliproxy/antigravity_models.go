@@ -514,8 +514,7 @@ func (s *Service) antigravityModelsForHintsWithConfig(auth *coreauth.Auth, hints
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	models := filterAntigravityModels(registry.GetAntigravityModels(), hints)
-	models = applyAntigravityFetchedModelCapabilities(models, hints)
+	models := antigravityInventoryModels(hints)
 	excluded := cfg.OAuthExcludedModels[coreauth.OAuthModelAliasChannel(auth.Provider, auth.AuthKind())]
 	if value := strings.TrimSpace(auth.Attributes["excluded_models"]); value != "" {
 		excluded = strings.Split(value, ",")
@@ -525,6 +524,10 @@ func (s *Service) antigravityModelsForHintsWithConfig(auth *coreauth.Auth, hints
 	models = s.appendPluginModels("antigravity", models, excluded)
 	models = applyOAuthSettingsForAuth(cfg, "antigravity", auth.AuthKind(), models)
 	return applyModelPrefixes(models, auth.Prefix, cfg.ForceModelPrefix)
+}
+
+func antigravityInventoryModels(hints antigravityModelCapabilityHints) []*ModelInfo {
+	return applyAntigravityFetchedModelCapabilities(filterAntigravityModels(registry.GetAntigravityModels(), hints), hints)
 }
 
 func (s *Service) asyncProbeAntigravityCapabilities(ctx context.Context, auth *coreauth.Auth, providerKey string) {
@@ -581,6 +584,10 @@ func (s *Service) applyAntigravityModelHints(ctx context.Context, auth *coreauth
 			entry.appliedRevision = hints.revision
 			entry.appliedEpoch = appliedEpoch
 			antigravityCapabilityCache[expectedKey] = entry
+			rules := inventoryCredentialRules(auth, true)
+			candidates := inventoryCandidates(s.cfg, auth, "antigravity", antigravityInventoryModels(hints), inventoryModelRules{credential: rules, applyAliases: true})
+			candidates = append(candidates, inventoryCandidates(s.cfg, auth, "antigravity", s.pluginModelsForProvider("antigravity"), inventoryModelRules{credential: rules})...)
+			s.setInventory(auth.ID, auth.RegistrationEpoch, s.cfg, candidates, models)
 		}
 		antigravityCapabilityMu.Unlock()
 		s.cfgMu.RUnlock()

@@ -169,9 +169,11 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	newCfg = newCfg.CloneForRuntime()
 	helps.AdvanceProxyPoolGeneration(s.proxyPoolPublisher, newCfg)
 	s.cfgMu.Lock()
+	s.sealInventory()
 	s.cfg = newCfg
 	s.cfgMu.Unlock()
 	s.cancelStaleAntigravityProbes("")
+	s.wakeModelDiscovery()
 	s.configSequence++
 	registry.UpdateModelCatalogSources(newCfg.Models, newCfg.Home.Enabled)
 	return configCommit{cfg: newCfg, sequence: s.configSequence}

@@ -357,6 +357,11 @@ func discoveryHTTPClient(ctx context.Context, cfg *config.Config, auth *coreauth
 }
 
 func readDiscoveryPage(client *http.Client, req *http.Request, channel string) (ojson.Result, error) {
+	// Bound each catalog page, including its body, independently of the
+	// overall listing. This deadline never applies to inference requests.
+	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
 	resp, err := client.Do(req)
 	if err != nil {
 		return ojson.Result{}, discoveryRequestError(req.Context(), channel, "listing request failed")

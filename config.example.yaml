@@ -19,6 +19,21 @@ models:
   catalog: ""
   codex-catalog: ""
   devin-catalog: ""
+  # off: use the configured/catalog model list without polling.
+  # shadow: poll and log differences; keep the existing list plus extras.
+  # live: serve discovered models plus extras; Claude only gates its existing
+  # aliases. Configured OpenCode Go and Z.ai aliases follow their upstream IDs.
+  # Extras use the channel's credentials and are removed from this list only
+  # when discovered in live mode. Exclusions still apply.
+  # Last-good listings are cached at <config path>.model-discovery.cache.
+  # In live mode, an exact Codex base rule also hides its -fast variant.
+  # Fetch at startup and every 60 s per account; back off on errors. Live retires IDs after three consecutive complete misses; errors interrupt the streak.
+  discovery:
+    codex: {mode: "off", extra: []}
+    opencode-go: {mode: "off", extra: []}
+    claude: {mode: "off", extra: []}
+    xai: {mode: "off", extra: []}
+    zai: {mode: "off", extra: []}
 
 # Listener, TLS, network discovery, and server operation.
 server:

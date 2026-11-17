@@ -136,7 +136,8 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
-	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	serverOptions := append(append([]api.ServerOption(nil), s.serverOptions...), api.WithModelInventorySource(s))
+	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.configRuntimeMu.Lock()
@@ -236,6 +237,7 @@ func (s *Service) Run(ctx context.Context) error {
 	s.registerModelRefreshCallback()
 	if !homeEnabled {
 		go s.runAntigravityModelRefresh(ctx)
+		go s.runProviderModelDiscovery(ctx)
 	}
 
 	select {

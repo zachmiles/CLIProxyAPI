@@ -658,6 +658,11 @@ func (s *Service) tryRegisterPluginModelsForAuthWithConfigFenced(ctx context.Con
 	}
 	publicationFence.exclusionProvider = providerKey
 	publicationFence.fallbackExclusionProvider = fallbackExclusionProvider
+	inventoryRules := inventoryCredentialRules(activeAuth, activeAuthKind != coreauth.AuthKindAPIKey)
+	if fallbackExclusionProvider != "" && fallbackExclusionProvider != providerKey && len(activeExcluded) != 0 {
+		inventoryRules = activeExcluded
+	}
+	publicationFence.inventory = inventoryCandidates(cfg, activeAuth, providerKey, result.Models, inventoryModelRules{credential: inventoryRules, applyAliases: true})
 	if len(models) > 0 {
 		models = applyOAuthSettingsForAuth(cfg, providerKey, activeAuthKind, models)
 		return true, s.registerResolvedModelsForAuthFenced(activeAuth, publicationFence, providerKey, applyModelPrefixes(models, activeAuth.Prefix, cfg != nil && cfg.ForceModelPrefix))

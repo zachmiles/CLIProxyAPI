@@ -44,18 +44,26 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	// not overwrite or remove the newer registration when it finishes last.
 	fence := newModelRegistrationFence(a, cfg)
 	s.cancelStaleAntigravityProbes(a.ID)
-	if a.Disabled {
+	discoveryChannel := discoveryChannelForAuth(a)
+	discoveryMode := discoverySettings(cfg, discoveryChannel).Mode
+	if discoveryEnabled(discoveryMode) {
+		fence.replaceModels = discoveryMode == "live"
+		fence.discoveryConfig = cfg
+	}
+	if a.Disabled || a.Status == coreauth.StatusDisabled {
 		if s != nil && s.coreManager != nil {
-			if current, ok := s.coreManager.GetByID(a.ID); ok && current != nil && !current.Disabled {
+			if current, ok := s.coreManager.GetByID(a.ID); ok && current != nil && !current.Disabled && current.Status != coreauth.StatusDisabled {
 				return false
 			}
 		}
+		s.invalidateDiscoveryAccount(a.ID)
 		return s.unregisterModelsForAuthFenced(a, fence)
 	}
 	if s != nil && s.coreManager != nil {
-		if current, ok := s.coreManager.GetByID(a.ID); !ok || current == nil || current.Disabled {
+		if current, ok := s.coreManager.GetByID(a.ID); !ok || current == nil || current.Disabled || current.Status == coreauth.StatusDisabled {
 			return true
 		}
+		s.trackInventoryRegistration(cfg, a)
 	}
 	authKind := a.AuthKind()
 	// Unregister legacy client ID (if present) to avoid double counting
@@ -88,6 +96,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	}
 	published := true
 	var models []*ModelInfo
+	credentialRules := inventoryCredentialRules(a, authKind != coreauth.AuthKindAPIKey)
 	switch provider {
 	case constant.Gemini:
 		models = registry.GetGeminiModels()
@@ -97,9 +106,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
+				credentialRules = append([]string{}, excluded...)
 			}
 		}
-		models = applyExcludedModels(models, excluded)
 	case constant.GeminiInteractions:
 		models = registry.GetGeminiModels()
 		if entry := resolveConfigInteractionsKeyForConfig(cfg, a); entry != nil {
@@ -108,9 +117,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
+				credentialRules = append([]string{}, excluded...)
 			}
 		}
-		models = applyExcludedModels(models, excluded)
 	case "vertex":
 		// Vertex AI Gemini supports the same model identifiers as Gemini.
 		models = registry.GetGeminiVertexModels()
@@ -120,14 +129,13 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
+				credentialRules = append([]string{}, excluded...)
 			}
 		} else {
 			models = appendVertexServiceAccountModels(cfg, a, models)
 		}
-		models = applyExcludedModels(models, excluded)
 	case "aistudio":
 		models = registry.GetAIStudioModels()
-		models = applyExcludedModels(models, excluded)
 	case "antigravity":
 		if !(cfg != nil && cfg.Home.Enabled) {
 			expectedRegEpoch := GlobalModelRegistry().ClientRegistrationEpoch(a.ID)
@@ -144,7 +152,6 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		} else {
 			models = registry.GetAntigravityModels()
 		}
-		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()
 		if entry := resolveConfigClaudeKeyForConfig(cfg, a); entry != nil {
@@ -153,16 +160,16 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
+				credentialRules = append([]string{}, excluded...)
 			}
 		}
-		models = applyExcludedModels(models, excluded)
 	case "codex":
 		if authKind == "apikey" {
 			if entry := resolveConfigCodexKeyForConfig(cfg, a); entry != nil {
 				models = buildCodexConfigModels(entry)
 				excluded = entry.ExcludedModels
+				credentialRules = append([]string{}, excluded...)
 			}
-			models = applyExcludedModels(models, excluded)
 			break
 		}
 
@@ -182,10 +189,8 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		default:
 			models = registry.GetCodexProModels()
 		}
-		models = applyExcludedModels(models, excluded)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		models = registry.GetKimiModels()
-		models = applyExcludedModels(models, excluded)
 	case "xai":
 		models = registry.GetXAIModels()
 		if entry := resolveConfigXAIKeyForConfig(cfg, a); entry != nil {
@@ -194,12 +199,11 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
+				credentialRules = append([]string{}, excluded...)
 			}
 		}
-		models = applyExcludedModels(models, excluded)
 	case "devin":
 		models = registry.GetDevinModels()
-		models = applyExcludedModels(models, excluded)
 	case "meta":
 		models = registry.GetMetaModels()
 		if entry := resolveConfigMetaKeyForConfig(cfg, a); entry != nil {
@@ -208,9 +212,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			if authKind == "apikey" {
 				excluded = entry.ExcludedModels
+				credentialRules = append([]string{}, excluded...)
 			}
 		}
-		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if cfg != nil {
@@ -252,11 +256,21 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			}
 			publishCompat := func(ms []*ModelInfo) bool {
 				compatFence := fence
+				channel := providerKey
 				if channel := coreauth.NamedCompatExclusionChannel(a); channel != "" {
 					compatFence.exclusionProvider = channel
 					compatFence.namedCompatExclusions = true
 				}
+				if compatFence.namedCompatExclusions {
+					channel = compatFence.exclusionProvider
+				}
+				ms = s.discoveryModels(cfg, a, ms, true)
 				ms = s.appendPluginModels(providerKey, ms, nil)
+				rulesForInventory := []string{}
+				if compatFence.namedCompatExclusions {
+					rulesForInventory = inventoryCredentialRules(a, true)
+				}
+				compatFence.inventory = inventoryCandidates(cfg, a, channel, ms, inventoryModelRules{credential: rulesForInventory, namedCompat: compatFence.namedCompatExclusions})
 				rules := coreauth.NamedCompatExcludedModels(cfg, a)
 				if len(rules) > 0 {
 					ms = filterCompatExcludedModels(ms, rules)
@@ -264,6 +278,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				ms = applyModelPrefixes(ms, a.Prefix, cfg.ForceModelPrefix)
 				if len(rules) > 0 && strings.TrimSpace(a.Prefix) != "" {
 					ms = filterCompatExcludedModels(ms, rules)
+				}
+				if discoveryMode == "live" && s.discoveryRows(cfg, a, discoveryChannel) != nil {
+					ms = withDiscoveryCompatPools(ms)
 				}
 				if len(ms) == 0 {
 					return s.unregisterModelsForAuthFenced(a, compatFence)
@@ -308,7 +325,15 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	if ctx.Err() != nil {
 		return true
 	}
+	models = s.discoveryModels(cfg, a, models, false)
+	variantExclusions := discoveryChannel == "codex" && discoveryMode == "live"
+	fence.inventory = inventoryCandidates(cfg, a, provider, models, inventoryModelRules{credential: credentialRules, applyAliases: true, codexVariants: variantExclusions})
+	fence.inventory = append(fence.inventory, inventoryCandidates(cfg, a, provider, s.pluginModelsForProvider(provider), inventoryModelRules{credential: credentialRules})...)
+	models = applyExcludedModels(models, excluded)
 	models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
+	if variantExclusions {
+		models = excludeCodexVariants(models, excluded)
+	}
 	if ctx.Err() != nil {
 		return true
 	}
@@ -681,6 +706,10 @@ func cloneModelInfoForCatalogRoute(model *ModelInfo) ModelInfo {
 }
 
 func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {
+	return applyModelPrefixesWithSource(models, prefix, forceModelPrefix, nil)
+}
+
+func applyModelPrefixesWithSource(models []*ModelInfo, prefix string, forceModelPrefix bool, source func(route, original string)) []*ModelInfo {
 	trimmedPrefix := strings.TrimSpace(prefix)
 	if trimmedPrefix == "" || len(models) == 0 {
 		return models
@@ -689,7 +718,7 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 	out := make([]*ModelInfo, 0, len(models)*2)
 	seen := make(map[string]struct{}, len(models)*2)
 
-	addModel := func(model *ModelInfo) {
+	addModel := func(model *ModelInfo, original string) {
 		if model == nil {
 			return
 		}
@@ -702,6 +731,9 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		}
 		seen[id] = struct{}{}
 		out = append(out, model)
+		if source != nil {
+			source(model.ID, original)
+		}
 	}
 
 	for _, model := range models {
@@ -713,7 +745,7 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 			continue
 		}
 		if !forceModelPrefix || trimmedPrefix == baseID {
-			addModel(model)
+			addModel(model, model.ID)
 		}
 		clone := cloneModelInfoForCatalogRoute(model)
 		clone.ID = trimmedPrefix + "/" + baseID
@@ -725,7 +757,7 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		}
 		clone.ExplicitThinking = model.ExplicitThinking
 		clone.ExplicitInputModalities = model.ExplicitInputModalities
-		addModel(&clone)
+		addModel(&clone, model.ID)
 	}
 	return out
 }
@@ -1133,7 +1165,7 @@ func applyOAuthModelAliasForAuth(cfg *config.Config, provider, authKind string, 
 	if len(aliases) == 0 {
 		return models
 	}
-	return applyOAuthModelAliasEntries(aliases, models)
+	return applyOAuthModelAliasEntries(aliases, models, nil)
 }
 
 func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map[string]string) []config.OAuthModelAlias {
@@ -1169,7 +1201,7 @@ func oauthModelAliasesForAuth(cfg *config.Config, channel string, attributes map
 	return out
 }
 
-func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*ModelInfo) []*ModelInfo {
+func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*ModelInfo, source func(route, original string)) []*ModelInfo {
 	type aliasEntry struct {
 		alias       string
 		displayName string
@@ -1262,6 +1294,9 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 				clone.Name = rewriteModelInfoName(clone.Name, id, mappedID)
 			}
 			out = append(out, &clone)
+			if source != nil {
+				source(mappedID, model.ID)
+			}
 			addedAlias = true
 		}
 

@@ -4,6 +4,7 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelinventory"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -64,6 +65,10 @@ type modelRegistrationFence struct {
 	disabled                  bool
 	authKind                  string
 	attributes                map[string]string
+	inventory                 []modelinventory.Candidate
+	inventoryConfig           *config.Config
+	replaceModels             bool
+	discoveryConfig           *config.Config
 }
 
 func newModelRegistrationFence(a *coreauth.Auth, cfg *config.Config) modelRegistrationFence {
@@ -91,6 +96,7 @@ func newModelRegistrationFence(a *coreauth.Auth, cfg *config.Config) modelRegist
 		disabled:          a.Disabled || a.Status == coreauth.StatusDisabled,
 		authKind:          a.AuthKind(),
 		attributes:        maps.Clone(a.Attributes),
+		inventoryConfig:   cfg,
 	}
 }
 
@@ -105,26 +111,39 @@ func (f modelRegistrationFence) withAuth(a *coreauth.Auth) modelRegistrationFenc
 	next.globalExclusions = f.globalExclusions
 	next.fallbackExclusionProvider = f.fallbackExclusionProvider
 	next.registryEpoch = f.registryEpoch
+	next.inventoryConfig = f.inventoryConfig
+	next.discoveryConfig = f.discoveryConfig
+	next.replaceModels = f.replaceModels
 	return next
 }
 
 func (f modelRegistrationFence) publishModels(s *Service, authID, providerKey string, models []*ModelInfo) bool {
-	return f.publishIfCurrent(s, authID, func() bool {
+	return f.publishIfCurrent(s, authID, models, func() bool {
+		if f.replaceModels {
+			_, ok := registry.GetGlobalRegistry().ReplaceClientModels(authID, providerKey, f.registryEpoch, models)
+			return ok
+		}
 		return GlobalModelRegistry().RegisterClientIfEpochCurrent(authID, providerKey, f.registryEpoch, models, func() bool { return true })
 	})
 }
 
 func (f modelRegistrationFence) publishUnregister(s *Service, authID string) bool {
-	return f.publishIfCurrent(s, authID, func() bool {
+	return f.publishIfCurrent(s, authID, nil, func() bool {
 		return GlobalModelRegistry().UnregisterClientIfEpochCurrent(authID, f.registryEpoch, func() bool { return true })
 	})
 }
 
-func (f modelRegistrationFence) publishIfCurrent(s *Service, authID string, publish func() bool) bool {
+func (f modelRegistrationFence) publishIfCurrent(s *Service, authID string, models []*ModelInfo, publish func() bool) bool {
 	publishWithConfig := func() bool {
-		if s != nil && !f.disabled && (f.authKind != coreauth.AuthKindAPIKey || f.namedCompatExclusions) && strings.TrimSpace(f.attributes["excluded_models"]) == "" {
+		inheritExclusion := s != nil && !f.disabled && (f.authKind != coreauth.AuthKindAPIKey || f.namedCompatExclusions) && strings.TrimSpace(f.attributes["excluded_models"]) == ""
+		if s != nil {
 			s.cfgMu.RLock()
 			defer s.cfgMu.RUnlock()
+			if f.discoveryConfig != nil && s.cfg != f.discoveryConfig {
+				return false
+			}
+		}
+		if inheritExclusion {
 			// Match the watcher's normalization so no-op and unrelated reloads do not
 			// discard work. A real change always schedules a replacement: the watcher
 			// redispatches affected auths, and applyConfigRuntime re-registers every
@@ -143,7 +162,13 @@ func (f modelRegistrationFence) publishIfCurrent(s *Service, authID string, publ
 			}
 			// Hold cfgMu through registry publication, not just the comparison.
 		}
-		return publish()
+		if !publish() {
+			return false
+		}
+		if s != nil && s.cfg == f.inventoryConfig {
+			s.setInventory(authID, f.registrationEpoch, f.inventoryConfig, f.inventory, models)
+		}
+		return true
 	}
 	if s == nil || s.coreManager == nil {
 		return publishWithConfig()
