@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"slices"
+
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
@@ -36,7 +38,63 @@ func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) ma
 		models = openAIModels
 	}
 	modelRegistry := registry.GetGlobalRegistry()
-	return codexmodels.BuildResponseForClientWithToolCapabilities(models, modelRegistry.GetModelProviders, modelRegistry.GetResponsesWebSearchCapability, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, version)
+	response := codexmodels.BuildResponseForClientWithToolCapabilities(models, modelRegistry.GetModelProviders, modelRegistry.GetResponsesWebSearchCapability, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, version)
+	if rows, ok := response["models"].([]map[string]any); ok {
+		for _, row := range rows {
+			id, _ := row["slug"].(string)
+			info := registry.LookupModelInfo(id)
+			if info == nil || !info.Discovery {
+				continue
+			}
+			// The Codex protocol expects numeric context windows. For a
+			// wholly unknown discovered model, do not claim the default
+			// template's window; zero preserves the unknown sentinel.
+			providers := modelRegistry.GetModelProviders(id)
+			templateID := info.MetadataModelID
+			if templateID == "" {
+				templateID = id
+			}
+			if info.ContextLength <= 0 && len(providers) == 1 && providers[0] == "codex" && !registry.HasCodexClientModelTemplate(templateID) {
+				row["context_window"], row["max_context_window"] = 0, 0
+			}
+			if info.DiscoveryServiceTiers != nil {
+				applyDiscoveredCodexTiers(row, info.DiscoveryServiceTiers)
+			}
+		}
+	}
+	return response
+}
+
+func applyDiscoveredCodexTiers(row map[string]any, discovered []string) {
+	tiers := make(map[string]map[string]any)
+	switch existing := row["service_tiers"].(type) {
+	case []any:
+		for _, tier := range existing {
+			if fields, ok := tier.(map[string]any); ok {
+				if id, ok := fields["id"].(string); ok {
+					tiers[id] = fields
+				}
+			}
+		}
+	}
+	out := make([]any, 0, len(discovered))
+	speed := make([]string, 0, 1)
+	for _, id := range discovered {
+		if id == "fast" {
+			speed = append(speed, id)
+			continue
+		}
+		if fields := tiers[id]; fields != nil {
+			out = append(out, fields)
+		} else {
+			out = append(out, map[string]any{"id": id, "name": id, "description": ""})
+		}
+	}
+	row["service_tiers"] = out
+	row["additional_speed_tiers"] = speed
+	if tier, _ := row["default_service_tier"].(string); tier != "" && !slices.Contains(discovered, tier) {
+		row["default_service_tier"] = nil
+	}
 }
 
 // CodexClientModelsResponse builds a Codex client model response.

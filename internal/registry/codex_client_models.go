@@ -68,6 +68,14 @@ func CodexClientModelUsesResponsesLite(slug string) bool {
 	return codexClientCatalogStore.responsesLiteMap[slug]
 }
 
+// HasCodexClientModelTemplate reports whether the catalog has this slug.
+func HasCodexClientModelTemplate(slug string) bool {
+	codexClientCatalogStore.mu.RLock()
+	defer codexClientCatalogStore.mu.RUnlock()
+	_, ok := codexClientCatalogStore.responsesLiteMap[strings.ToLower(strings.TrimSpace(slug))]
+	return ok
+}
+
 // CodexClientModelThinkingLevels returns a copy of the supported reasoning
 // levels for slug in the active Codex client model catalog, or nil if absent.
 func CodexClientModelThinkingLevels(slug string) []string {
@@ -136,9 +144,8 @@ func parseAndValidateCodexClientModelsJSON(data []byte) (map[string]bool, map[st
 			return nil, nil, fmt.Errorf("Codex client model catalog model %q: %w", slug, err)
 		}
 		lowerSlug := strings.ToLower(slug)
-		if lite, ok := model["use_responses_lite"].(bool); ok && lite {
-			responsesLiteMap[lowerSlug] = true
-		}
+		lite, _ := model["use_responses_lite"].(bool)
+		responsesLiteMap[lowerSlug] = lite
 		if rawLevels, ok := model["supported_reasoning_levels"].([]any); ok {
 			levels := make([]string, 0, len(rawLevels))
 			for _, rawLevel := range rawLevels {

@@ -369,7 +369,23 @@ func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel strin
 			candidates = []string{resolved}
 		}
 	}
+	if auth != nil && !routing.config.Home.Enabled {
+		if pool := registry.GetGlobalRegistry().ClientDiscoveryUpstreams(auth.ID, canonicalModelKey(routeModel)); pool != nil {
+			requestedSuffix := thinking.ParseSuffix(requestedModel)
+			candidates = pool
+			if len(pool) > 1 {
+				offset := m.nextModelPoolOffset(openAICompatModelPoolKey(auth, requestedModel), len(pool))
+				candidates = rotateStrings(pool, offset)
+			}
+			for i := range candidates {
+				candidates[i] = preserveResolvedModelSuffix(candidates[i], requestedSuffix)
+			}
+		}
+	}
 	pooled := len(candidates) > 1
+	if m.codexDiscoveryVariantExcluded(routing.config, auth, routeModel) {
+		return nil, pooled, aliasResult, routing
+	}
 	if !routing.config.Home.Enabled {
 		rules := NamedCompatExcludedModels(routing.config, auth)
 		if len(rules) > 0 {

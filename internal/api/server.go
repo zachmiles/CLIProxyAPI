@@ -199,7 +199,15 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 
 	engine.Use(corsMiddleware())
-	engine.Use(s.responseCompressionMiddleware())
+	compressResponse := s.responseCompressionMiddleware()
+	engine.Use(func(c *gin.Context) {
+		// The inventory's strong validator hashes its exact JSON response bytes.
+		if c.FullPath() == "/v8/management/models/inventory" {
+			c.Next()
+			return
+		}
+		compressResponse(c)
+	})
 	openai.SetResponsesWebsocketCompressionEnabled(cfg.Codex.WebsocketCompressionEnabled())
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
@@ -224,6 +232,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
+	s.mgmt.SetModelInventorySource(optionState.modelInventorySource)
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}

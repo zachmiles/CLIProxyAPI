@@ -1,5 +1,18 @@
 package auth
 
+import "context"
+
+// HoldAuthSnapshot prevents credential mutations until release. Callers must
+// not call manager operations that mutate the credential while holding it.
+func (m *Manager) HoldAuthSnapshot(ctx context.Context, id string) (*Auth, func(), error) {
+	release, errLock := m.lockAuthMutationContext(ctx, id)
+	if errLock != nil {
+		return nil, nil, errLock
+	}
+	auth, _ := m.GetByID(id)
+	return auth, release, nil
+}
+
 // WatchAuthChanges observes structural changes to one runtime credential,
 // including token preparation/refresh, replacement, removal and store reload.
 // Notifications are coalesced: consumers must inspect the latest manager state.

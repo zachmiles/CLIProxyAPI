@@ -93,6 +93,32 @@ func namedCompatExecutionOverrideExcluded(cfg *internalconfig.Config, auth *Auth
 	return namedCompatRouteExcluded(auth, executionModel, NamedCompatExcludedModels(cfg, auth))
 }
 
+// codexDiscoveryVariantExcluded prevents selection's canonical-alias fallback
+// from picking the base credential for a fast route that was removed from its
+// registry. Base routes themselves are not affected by a variant-only rule.
+func (m *Manager) codexDiscoveryVariantExcluded(cfg *internalconfig.Config, auth *Auth, routeModel string) bool {
+	if cfg == nil || cfg.Home.Enabled || auth == nil || !strings.EqualFold(auth.Provider, "codex") || auth.AuthKind() == AuthKindAPIKey {
+		return false
+	}
+	if cfg.Models.Discovery["codex"].Mode != "live" {
+		return false
+	}
+	requested := rewriteModelForAuth(routeModel, auth)
+	baseRoute := thinking.ParseSuffix(requested).ModelName
+	if !strings.HasSuffix(baseRoute, "-fast") {
+		return false
+	}
+	upstream := thinking.ParseSuffix(m.applyOAuthModelAliasWithResult(auth, requested).UpstreamModel).ModelName
+	if upstream == "" || upstream == baseRoute {
+		return false
+	}
+	rules := cfg.OAuthExcludedModels["codex"]
+	if raw := strings.TrimSpace(auth.Attributes["excluded_models"]); raw != "" {
+		rules = strings.Split(raw, ",")
+	}
+	return ModelMatchesExclusions(baseRoute, rules) || ModelMatchesExclusions(upstream, rules)
+}
+
 func matchExclusionWildcard(pattern, value string) bool {
 	prefix, rest, wild := strings.Cut(pattern, "*")
 	if !wild {

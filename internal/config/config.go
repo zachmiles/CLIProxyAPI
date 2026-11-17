@@ -41,6 +41,9 @@ type Config struct {
 	// SourceHash is runtime-only: the SHA-256 of the config file bytes this config was
 	// parsed from, or empty when the config was not loaded from a file.
 	SourceHash string `yaml:"-" json:"-"`
+	// SourceOAuthExcludedModels preserves the authored rules before normalization
+	// so an inventory client can edit the map without dropping empty entries.
+	SourceOAuthExcludedModels map[string][]string `yaml:"-" json:"-"`
 
 	// CredentialConcurrency contains Home-authoritative credential lifecycle settings.
 	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`

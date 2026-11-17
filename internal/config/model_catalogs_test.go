@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -28,7 +30,7 @@ func TestModelCatalogConfigRoundTrip(t *testing.T) {
 			if errLoad != nil {
 				t.Fatal(errLoad)
 			}
-			if cfg.Models != sources {
+			if !reflect.DeepEqual(cfg.Models, sources) {
 				t.Fatalf("loaded sources: %+v", cfg.Models)
 			}
 			if errSave := SaveConfigPreserveComments(path, cfg, migrate); errSave != nil {
@@ -45,7 +47,7 @@ func TestModelCatalogConfigRoundTrip(t *testing.T) {
 			if errReload != nil {
 				t.Fatal(errReload)
 			}
-			if reloaded.Models != sources {
+			if !reflect.DeepEqual(reloaded.Models, sources) {
 				t.Fatalf("saved sources: %+v", reloaded.Models)
 			}
 			cfg.Models = ModelCatalogs{}
@@ -56,7 +58,7 @@ func TestModelCatalogConfigRoundTrip(t *testing.T) {
 			if errClear != nil {
 				t.Fatal(errClear)
 			}
-			if cleared.Models != (ModelCatalogs{}) {
+			if !reflect.DeepEqual(cleared.Models, ModelCatalogs{}) {
 				t.Fatalf("cleared sources retained: %+v", cleared.Models)
 			}
 
@@ -65,6 +67,10 @@ func TestModelCatalogConfigRoundTrip(t *testing.T) {
 }
 
 func TestModelCatalogConfigValidation(t *testing.T) {
+	badChannel := []byte("models: {discovery: {typo-channel: {mode: \"off\"}}}")
+	if errValidate := ValidateV8Config(badChannel); errValidate == nil || !strings.Contains(errValidate.Error(), `"typo-channel"`) {
+		t.Fatalf("expected discovery validation to name the unsupported channel, got %v", errValidate)
+	}
 	for _, field := range []string{"catalog", "codex-catalog", "devin-catalog"} {
 		for _, source := range []string{"relative.json", "./models.json", "~/models.json", "ftp://example.com/models", "file:///tmp/models.json", "https:///models"} {
 			data := []byte(fmt.Sprintf("models:\n  %s: %q\n", field, source))

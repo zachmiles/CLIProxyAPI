@@ -284,6 +284,7 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 		return errValidate
 	}
 	*cfg = Config(decoded)
+	cfg.SourceOAuthExcludedModels = decoded.OAuthExcludedModels
 	cfg.SyncServerResponseCompression()
 	cfg.OAuthOnlyFields = nil
 	source := expandConfigAliases(node)

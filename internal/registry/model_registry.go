@@ -42,7 +42,13 @@ type ModelInfo struct {
 	ID string `json:"id"`
 	// MetadataModelID identifies the canonical model used to resolve client metadata.
 	// It is internal and must not be exposed in model-list responses.
-	MetadataModelID string `json:"-"`
+	MetadataModelID       string   `json:"-"`
+	Discovery             bool     `json:"-"`
+	DiscoveryKind         string   `json:"-"`
+	DiscoveryFamily       string   `json:"-"`
+	DiscoveryServiceTiers []string `json:"-"`
+	// DiscoveryUpstreams is the eligible upstream pool for this live compat route.
+	DiscoveryUpstreams []string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -835,6 +841,12 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		return nil
 	}
 	copyModel := *model
+	if model.DiscoveryServiceTiers != nil {
+		copyModel.DiscoveryServiceTiers = append([]string{}, model.DiscoveryServiceTiers...)
+	}
+	if model.DiscoveryUpstreams != nil {
+		copyModel.DiscoveryUpstreams = append([]string{}, model.DiscoveryUpstreams...)
+	}
 	if model.NativeCapabilities != nil {
 		copyCapabilities := *model.NativeCapabilities
 		if model.NativeCapabilities.WebSearch != nil {
@@ -2114,4 +2126,15 @@ func (r *ModelRegistry) ClientRegistrationEpoch(clientID string) uint64 {
 func (r *ModelRegistry) GetModelsForClient(clientID string) []*ModelInfo {
 	models, _ := r.GetModelsAndEpochForClient(clientID)
 	return models
+}
+
+// ClientDiscoveryUpstreams returns a copy of the live compat route's pool, or
+// nil for a route that uses normal configured routing.
+func (r *ModelRegistry) ClientDiscoveryUpstreams(clientID, modelID string) []string {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	if info := r.clientModelInfos[clientID][modelID]; info != nil && info.DiscoveryUpstreams != nil {
+		return append([]string{}, info.DiscoveryUpstreams...)
+	}
+	return nil
 }
