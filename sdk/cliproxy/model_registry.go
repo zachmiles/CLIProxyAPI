@@ -56,6 +56,7 @@ type modelRegistrationFence struct {
 	globalExclusions          map[string]diff.ExcludedModelsSummary
 	exclusionProvider         string
 	fallbackExclusionProvider string
+	namedCompatExclusions     bool
 	registryEpoch             uint64
 	registrationEpoch         uint64
 	prefix                    string
@@ -121,7 +122,7 @@ func (f modelRegistrationFence) publishUnregister(s *Service, authID string) boo
 
 func (f modelRegistrationFence) publishIfCurrent(s *Service, authID string, publish func() bool) bool {
 	publishWithConfig := func() bool {
-		if s != nil && !f.disabled && f.authKind != coreauth.AuthKindAPIKey && strings.TrimSpace(f.attributes["excluded_models"]) == "" {
+		if s != nil && !f.disabled && (f.authKind != coreauth.AuthKindAPIKey || f.namedCompatExclusions) && strings.TrimSpace(f.attributes["excluded_models"]) == "" {
 			s.cfgMu.RLock()
 			defer s.cfgMu.RUnlock()
 			// Match the watcher's normalization so no-op and unrelated reloads do not
@@ -133,6 +134,9 @@ func (f modelRegistrationFence) publishIfCurrent(s *Service, authID string, publ
 					continue
 				}
 				current := oauthExcludedModelsForConfig(s.cfg, provider, f.authKind)
+				if f.namedCompatExclusions && s.cfg != nil {
+					current = s.cfg.OAuthExcludedModels[provider]
+				}
 				if f.globalExclusions[provider] != diff.SummarizeExcludedModels(current) {
 					return false
 				}

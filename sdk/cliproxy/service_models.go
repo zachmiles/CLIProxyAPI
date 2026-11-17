@@ -250,50 +250,45 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 					isCompatAuth = true
 				}
 			}
+			publishCompat := func(ms []*ModelInfo) bool {
+				compatFence := fence
+				if channel := coreauth.NamedCompatExclusionChannel(a); channel != "" {
+					compatFence.exclusionProvider = channel
+					compatFence.namedCompatExclusions = true
+				}
+				ms = s.appendPluginModels(providerKey, ms, nil)
+				rules := coreauth.NamedCompatExcludedModels(cfg, a)
+				if len(rules) > 0 {
+					ms = filterCompatExcludedModels(ms, rules)
+				}
+				ms = applyModelPrefixes(ms, a.Prefix, cfg.ForceModelPrefix)
+				if len(rules) > 0 && strings.TrimSpace(a.Prefix) != "" {
+					ms = filterCompatExcludedModels(ms, rules)
+				}
+				if len(ms) == 0 {
+					return s.unregisterModelsForAuthFenced(a, compatFence)
+				}
+				return s.registerResolvedModelsForAuthFenced(a, compatFence, providerKey, ms)
+			}
 			registerCompat := func(compat *config.OpenAICompatibility) bool {
 				if compat == nil || compat.Disabled {
 					return false
 				}
-				isCompatAuth = true
-				ms := buildOpenAICompatibilityConfigModels(compat)
 				if providerKey == "" {
 					providerKey = "openai-compatibility"
 				}
-				if len(ms) > 0 {
-					ms = s.appendPluginModels(providerKey, ms, nil)
-					published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(ms, a.Prefix, cfg.ForceModelPrefix))
-				} else {
-					ms = s.appendPluginModels(providerKey, nil, nil)
-					if len(ms) > 0 {
-						published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(ms, a.Prefix, cfg.ForceModelPrefix))
-					} else {
-						published = s.unregisterModelsForAuthFenced(a, fence)
-					}
-				}
+				published = publishCompat(buildOpenAICompatibilityConfigModels(compat))
 				return true
 			}
 			if compatCache != nil && compatCache.cfg == cfg {
 				if cached, ok := compatCache.lookup(a, compatName); ok {
-					isCompatAuth = true
 					if providerKey == "" {
 						providerKey = cached.providerKey
 					}
 					if providerKey == "" {
 						providerKey = "openai-compatibility"
 					}
-					ms := cached.models
-					if len(ms) > 0 {
-						ms = s.appendPluginModels(providerKey, ms, nil)
-						published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(ms, a.Prefix, cfg.ForceModelPrefix))
-					} else {
-						ms = s.appendPluginModels(providerKey, nil, nil)
-						if len(ms) > 0 {
-							published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(ms, a.Prefix, cfg.ForceModelPrefix))
-						} else {
-							published = s.unregisterModelsForAuthFenced(a, fence)
-						}
-					}
-					return published
+					return publishCompat(cached.models)
 				}
 			}
 			if indexed := configEntryForAuthIndex(a, cfg.OpenAICompatibility); indexed != nil && registerCompat(indexed) {
@@ -306,14 +301,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				}
 			}
 			if isCompatAuth {
-				models = s.appendPluginModels(providerKey, nil, nil)
-				if len(models) > 0 {
-					published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(models, a.Prefix, cfg.ForceModelPrefix))
-				} else {
-					// No matching provider found or models removed entirely; drop any prior registration.
-					published = s.unregisterModelsForAuthFenced(a, fence)
-				}
-				return published
+				return publishCompat(nil)
 			}
 		}
 	}
@@ -659,30 +647,20 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 		return models
 	}
 
-	patterns := make([]string, 0, len(excluded))
-	for _, item := range excluded {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			patterns = append(patterns, strings.ToLower(trimmed))
-		}
-	}
-	if len(patterns) == 0 {
-		return models
-	}
-
 	filtered := make([]*ModelInfo, 0, len(models))
 	for _, model := range models {
-		if model == nil {
-			continue
+		if model != nil && !coreauth.ModelMatchesExclusions(model.ID, excluded) {
+			filtered = append(filtered, model)
 		}
-		modelID := strings.ToLower(strings.TrimSpace(model.ID))
-		blocked := false
-		for _, pattern := range patterns {
-			if matchWildcard(pattern, modelID) {
-				blocked = true
-				break
-			}
-		}
-		if !blocked {
+	}
+	return filtered
+}
+
+func filterCompatExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
+	filtered := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model != nil && !coreauth.NamedCompatModelExcluded(model.ID, excluded) &&
+			!coreauth.NamedCompatModelExcluded(model.MetadataModelID, excluded) {
 			filtered = append(filtered, model)
 		}
 	}
@@ -750,50 +728,6 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		addModel(&clone)
 	}
 	return out
-}
-
-// matchWildcard performs case-insensitive wildcard matching where '*' matches any substring.
-func matchWildcard(pattern, value string) bool {
-	if pattern == "" {
-		return false
-	}
-
-	// Fast path for exact match (no wildcard present).
-	if !strings.Contains(pattern, "*") {
-		return pattern == value
-	}
-
-	parts := strings.Split(pattern, "*")
-	// Handle prefix.
-	if prefix := parts[0]; prefix != "" {
-		if !strings.HasPrefix(value, prefix) {
-			return false
-		}
-		value = value[len(prefix):]
-	}
-
-	// Handle suffix.
-	if suffix := parts[len(parts)-1]; suffix != "" {
-		if !strings.HasSuffix(value, suffix) {
-			return false
-		}
-		value = value[:len(value)-len(suffix)]
-	}
-
-	// Handle middle segments in order.
-	for i := 1; i < len(parts)-1; i++ {
-		segment := parts[i]
-		if segment == "" {
-			continue
-		}
-		idx := strings.Index(value, segment)
-		if idx < 0 {
-			return false
-		}
-		value = value[idx+len(segment):]
-	}
-
-	return true
 }
 
 type modelEntry interface {

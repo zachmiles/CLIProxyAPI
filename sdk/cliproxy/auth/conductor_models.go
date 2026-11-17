@@ -370,6 +370,23 @@ func (m *Manager) executionModelCandidatesWithAlias(auth *Auth, routeModel strin
 		}
 	}
 	pooled := len(candidates) > 1
+	if !routing.config.Home.Enabled {
+		rules := NamedCompatExcludedModels(routing.config, auth)
+		if len(rules) > 0 {
+			if namedCompatRouteExcluded(auth, routeModel, rules) {
+				candidates = nil
+			} else {
+				// Candidates are local to this call, including the rotated pool.
+				allowed := candidates[:0]
+				for _, upstream := range candidates {
+					if !NamedCompatModelExcluded(upstream, rules) {
+						allowed = append(allowed, upstream)
+					}
+				}
+				candidates = allowed
+			}
+		}
+	}
 	return candidates, pooled, aliasResult, routing
 }
 
