@@ -37,13 +37,18 @@ func loadDiscoveryCache(path string) map[string]map[string]discoveryRow {
 		log.Warn("could not load model discovery cache")
 		return cache
 	}
+	now := modelDiscoveryNow().UTC()
 	for key, rows := range saved {
 		if _, errDecode := hex.DecodeString(key); len(key) != 64 || errDecode != nil || rows == nil {
 			continue
 		}
 		for id, row := range rows {
-			if id == "" || id != row.Model.ID || row.Misses < 0 || row.Misses >= 3 {
+			if id == "" || id != row.Model.ID || row.Misses < 0 || row.Misses > 3 {
 				delete(rows, id)
+			} else if row.LastSeen.IsZero() {
+				// Older caches cannot prove how long the model has been absent.
+				row.LastSeen = now
+				rows[id] = row
 			}
 		}
 		cache[key] = rows

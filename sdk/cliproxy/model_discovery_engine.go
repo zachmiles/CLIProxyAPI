@@ -22,13 +22,17 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const modelDiscoveryInterval = time.Minute
+const (
+	modelDiscoveryInterval        = time.Minute
+	modelDiscoveryRetirementFloor = 30 * time.Minute
+)
 
 var modelDiscoveryNow = time.Now
 
 type discoveryRow struct {
-	Model  discoveredModel
-	Misses int
+	Model    discoveredModel
+	Misses   int
+	LastSeen time.Time `yaml:"last-seen,omitempty"`
 }
 
 type discoveryAccount struct {
@@ -45,7 +49,7 @@ type discoveryAccount struct {
 	pendingExtras map[string]bool
 }
 
-func (a *discoveryAccount) record(list []discoveredModel, err error) {
+func (a *discoveryAccount) record(list []discoveredModel, err error, now time.Time) {
 	if err != nil {
 		for id, row := range a.rows {
 			row.Misses = 0
@@ -61,13 +65,13 @@ func (a *discoveryAccount) record(list []discoveredModel, err error) {
 		row.ID = strings.TrimSpace(row.ID)
 		if row.ID != "" {
 			seen[row.ID] = true
-			a.rows[row.ID] = discoveryRow{Model: row}
+			a.rows[row.ID] = discoveryRow{Model: row, LastSeen: now.UTC()}
 		}
 	}
 	for id, row := range a.rows {
 		if !seen[id] {
-			row.Misses++
-			if row.Misses >= 3 {
+			row.Misses = min(row.Misses+1, 3)
+			if row.Misses == 3 && now.Sub(row.LastSeen) >= modelDiscoveryRetirementFloor {
 				delete(a.rows, id)
 			} else {
 				a.rows[id] = row
@@ -347,9 +351,8 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 	}
 	now := modelDiscoveryNow()
 	previous := d.cache[account.key]
-	account.record(list, errFetch)
-	changed := !reflect.DeepEqual(previous, account.rows)
-	if changed && account.rows != nil {
+	account.record(list, errFetch, now)
+	if account.rows != nil && !reflect.DeepEqual(previous, account.rows) {
 		d.cache[account.key] = maps.Clone(account.rows)
 		d.dirty = true
 	}
@@ -371,7 +374,12 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 	account.failure = antigravityFailureState{}
 	account.next = now.Add(modelDiscoveryInterval)
 	var removeExtras map[string]bool
+	var routesChanged bool
 	if account.mode == "live" {
+		// Persist sightings and misses without republishing identical routes.
+		routesChanged = previous == nil || !maps.EqualFunc(previous, account.rows, func(a, b discoveryRow) bool {
+			return reflect.DeepEqual(a.Model, b.Model)
+		})
 		removeExtras = account.pendingExtras
 		for _, id := range discoverySettings(s.currentConfig(), channel).Extra {
 			id = strings.TrimSpace(id)
@@ -393,7 +401,7 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 
 	switch account.mode {
 	case "live":
-		if changed {
+		if routesChanged {
 			s.completeModelRegistrationForAuth(ctx, auth)
 		}
 		if s.removeDiscoveredExtras(ctx, auth.ID, channel, account, removeExtras) {

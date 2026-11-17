@@ -27,6 +27,7 @@ import (
 
 func TestDiscoveryRetiresOnlyAfterThreeConsecutiveCompleteMisses(t *testing.T) {
 	var account discoveryAccount
+	now := time.Unix(1_700_000_000, 0)
 	check := func(want bool) {
 		t.Helper()
 		_, have := account.rows["new"]
@@ -34,25 +35,150 @@ func TestDiscoveryRetiresOnlyAfterThreeConsecutiveCompleteMisses(t *testing.T) {
 			t.Fatalf("present = %v, want %v", have, want)
 		}
 	}
-	account.record([]discoveredModel{{ID: "new"}}, nil)
-	account.record(nil, nil)
-	account.record(nil, nil)
-	account.record([]discoveredModel{{ID: "partial"}}, errors.New("incomplete"))
+	account.record([]discoveredModel{{ID: "new"}}, nil, now)
+	now = now.Add(30 * time.Minute)
+	account.record(nil, nil, now)
+	account.record(nil, nil, now)
+	account.record([]discoveredModel{{ID: "partial"}}, errors.New("incomplete"), now)
 	check(true)
 	if _, ok := account.rows["partial"]; ok {
 		t.Fatal("incomplete listing changed membership")
 	}
-	account.record(nil, nil)
-	account.record(nil, nil)
+	account.record(nil, nil, now)
+	account.record(nil, nil, now)
 	check(true)
-	account.record(nil, nil)
+	account.record(nil, nil, now)
 	check(false)
 	if account.rows == nil {
 		t.Fatal("complete empty listing treated as unseen")
 	}
 }
 
+func TestDiscoveryRetirementFloor(t *testing.T) {
+	const id = "retirement-floor-model"
+	type step struct {
+		at     time.Duration
+		seen   bool
+		served bool
+		misses int
+	}
+	for _, tc := range []struct {
+		name  string
+		steps []step
+	}{
+		{
+			name: "quick misses",
+			steps: []step{
+				{0, true, true, 0},
+				{time.Minute, false, true, 1},
+				{2 * time.Minute, false, true, 2},
+				{30*time.Minute - time.Second, false, true, 3},
+			},
+		},
+		{
+			name: "exact floor",
+			steps: []step{
+				{0, true, true, 0},
+				{time.Minute, false, true, 1},
+				{2 * time.Minute, false, true, 2},
+				{3 * time.Minute, false, true, 3},
+				{30 * time.Minute, false, false, 0},
+			},
+		},
+		{
+			name: "sighting resets streak and age",
+			steps: []step{
+				{0, true, true, 0},
+				{time.Minute, false, true, 1},
+				{2 * time.Minute, false, true, 2},
+				{10 * time.Minute, true, true, 0},
+				{30 * time.Minute, false, true, 1},
+				{31 * time.Minute, false, true, 2},
+				{32 * time.Minute, false, true, 3},
+				{40 * time.Minute, false, false, 0},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Unix(1_700_000_000, 0)
+			now := setDiscoveryTestClock(t, start)
+			cfg := &config.Config{}
+			cfg.Models.Discovery = map[string]registry.ModelDiscovery{"codex": {Mode: "live"}}
+			s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+			auth := registerDiscoveryEngineTestAuth(t, s, "codex")
+			var list []discoveredModel
+			tick := discoveryTestRunner(t, s, auth, func(context.Context, *config.Config, *coreauth.Auth) ([]discoveredModel, error) {
+				return list, nil
+			})
+			for _, step := range tc.steps {
+				*now = start.Add(step.at)
+				list = nil
+				if step.seen {
+					list = []discoveredModel{{ID: id}}
+				}
+				tick()
+				if got := GlobalModelRegistry().ClientSupportsModel(auth.ID, id); got != step.served {
+					t.Fatalf("at %v: served = %v, want %v", step.at, got, step.served)
+				}
+				if step.served {
+					if got := s.discoveryRows(cfg, auth, "codex")[id].Misses; got != step.misses {
+						t.Fatalf("at %v: misses = %d, want %d", step.at, got, step.misses)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDiscoveryRetirementFloorSurvivesRestart(t *testing.T) {
+	const id = "cached-retirement-floor-model"
+	start := time.Unix(1_700_000_000, 0)
+	now := setDiscoveryTestClock(t, start)
+	cfg := &config.Config{}
+	cfg.Models.Discovery = map[string]registry.ModelDiscovery{"codex": {Mode: "live"}}
+	s := &Service{cfg: cfg, configPath: filepath.Join(t.TempDir(), "config.yaml"), coreManager: coreauth.NewManager(nil, nil, nil)}
+	auth := registerDiscoveryEngineTestAuth(t, s, "codex")
+	list := []discoveredModel{{ID: id}}
+	tick := discoveryTestRunner(t, s, auth, func(context.Context, *config.Config, *coreauth.Auth) ([]discoveredModel, error) {
+		return list, nil
+	})
+	tick()
+	list = nil
+	for minute := 1; minute <= 3; minute++ {
+		*now = start.Add(time.Duration(minute) * time.Minute)
+		tick()
+	}
+
+	*now = start.Add(20 * time.Minute)
+	restarted := &Service{cfg: cfg, configPath: s.configPath, coreManager: s.coreManager}
+	restarted.completeModelRegistrationForAuth(t.Context(), auth)
+	if !GlobalModelRegistry().ClientSupportsModel(auth.ID, id) {
+		t.Fatal("restart did not restore the model with three misses before the floor")
+	}
+	tick = discoveryTestRunner(t, restarted, auth, func(context.Context, *config.Config, *coreauth.Auth) ([]discoveredModel, error) {
+		return nil, nil
+	})
+	tick()
+	if !GlobalModelRegistry().ClientSupportsModel(auth.ID, id) {
+		t.Fatal("first miss after restart retired the model before the floor")
+	}
+	*now = start.Add(30 * time.Minute)
+	tick()
+	if GlobalModelRegistry().ClientSupportsModel(auth.ID, id) {
+		t.Fatal("restart reset the last-seen time instead of restoring it")
+	}
+}
+
+func setDiscoveryTestClock(t *testing.T, now time.Time) *time.Time {
+	t.Helper()
+	oldNow := modelDiscoveryNow
+	modelDiscoveryNow = func() time.Time { return now }
+	t.Cleanup(func() { modelDiscoveryNow = oldNow })
+	return &now
+}
+
 func TestDiscoveryExtraCodexParityAndConfigV8Precondition(t *testing.T) {
+	now := setDiscoveryTestClock(t, time.Unix(1_700_000_000, 0))
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte("# preserved\nconfig-version: 8\nmodels:\n  discovery:\n    codex:\n      mode: live # still live\n      extra: [gpt-6.2-sol, retain-me]\n")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
@@ -133,6 +259,7 @@ func TestDiscoveryExtraCodexParityAndConfigV8Precondition(t *testing.T) {
 	}
 	testFetch = nil
 	for i := 1; i <= 3; i++ {
+		*now = now.Add(10 * time.Minute)
 		tick()
 		if got := GlobalModelRegistry().ClientSupportsModel(auth.ID, "gpt-6.2-sol"); got != (i < 3) {
 			t.Fatalf("extra after miss %d is present=%v", i, got)
@@ -220,6 +347,7 @@ func TestDiscoveryModesSchedulingAndRevocation(t *testing.T) {
 }
 
 func TestDiscoveryRestartLoadsLastGood(t *testing.T) {
+	now := setDiscoveryTestClock(t, time.Unix(1_700_000_000, 0))
 	cfg := &config.Config{}
 	cfg.Models.Discovery = map[string]registry.ModelDiscovery{"codex": {Mode: "live"}}
 	s := &Service{cfg: cfg, configPath: filepath.Join(t.TempDir(), "config.yaml"), coreManager: coreauth.NewManager(nil, nil, nil)}
@@ -240,6 +368,7 @@ func TestDiscoveryRestartLoadsLastGood(t *testing.T) {
 	if !GlobalModelRegistry().ClientSupportsModel(auth.ID, "cached-discovery-model") {
 		t.Fatal("restart lost last-good before fetch")
 	}
+	*now = now.Add(30 * time.Minute)
 	discoveryTestRunner(t, restarted, auth, func(context.Context, *config.Config, *coreauth.Auth) ([]discoveredModel, error) { return nil, nil })()
 	if GlobalModelRegistry().ClientSupportsModel(auth.ID, "cached-discovery-model") {
 		t.Fatal("restart lost miss streak")
@@ -329,6 +458,7 @@ func TestDiscoveryClaudeGatesExistingAliases(t *testing.T) {
 }
 
 func TestDiscoveryCompatMergesProviderFieldsAndRetiresConfiguredModels(t *testing.T) {
+	now := setDiscoveryTestClock(t, time.Unix(1_700_000_000, 0))
 	cfg := &config.Config{OpenAICompatibility: []config.OpenAICompatibility{{
 		Name: "zai", BaseURL: "https://api.z.ai/api/coding/paas/v4",
 		Models: []config.OpenAICompatibilityModel{
@@ -371,6 +501,7 @@ func TestDiscoveryCompatMergesProviderFieldsAndRetiresConfiguredModels(t *testin
 	}
 	rows = nil
 	for range 3 {
+		*now = now.Add(10 * time.Minute)
 		tick()
 	}
 	if GlobalModelRegistry().ClientSupportsModel(auth.ID, "glm-alias") ||
