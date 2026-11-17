@@ -28,6 +28,7 @@ import (
 func TestDiscoveryRetiresOnlyAfterThreeConsecutiveCompleteMisses(t *testing.T) {
 	var account discoveryAccount
 	now := time.Unix(1_700_000_000, 0)
+	covered := func(discoveredModel) bool { return true }
 	check := func(want bool) {
 		t.Helper()
 		_, have := account.rows["new"]
@@ -35,19 +36,19 @@ func TestDiscoveryRetiresOnlyAfterThreeConsecutiveCompleteMisses(t *testing.T) {
 			t.Fatalf("present = %v, want %v", have, want)
 		}
 	}
-	account.record([]discoveredModel{{ID: "new"}}, nil, now)
+	account.record([]discoveredModel{{ID: "new"}}, nil, now, covered)
 	now = now.Add(30 * time.Minute)
-	account.record(nil, nil, now)
-	account.record(nil, nil, now)
-	account.record([]discoveredModel{{ID: "partial"}}, errors.New("incomplete"), now)
+	account.record(nil, nil, now, covered)
+	account.record(nil, nil, now, covered)
+	account.record([]discoveredModel{{ID: "partial"}}, errors.New("incomplete"), now, covered)
 	check(true)
 	if _, ok := account.rows["partial"]; ok {
 		t.Fatal("incomplete listing changed membership")
 	}
-	account.record(nil, nil, now)
-	account.record(nil, nil, now)
+	account.record(nil, nil, now, covered)
+	account.record(nil, nil, now, covered)
 	check(true)
-	account.record(nil, nil, now)
+	account.record(nil, nil, now, covered)
 	check(false)
 	if account.rows == nil {
 		t.Fatal("complete empty listing treated as unseen")
@@ -278,7 +279,8 @@ func TestDiscoveryConfigWriteConflictDoesNotClobber(t *testing.T) {
 		if errWrite := os.WriteFile(path, want, 0o600); errWrite != nil {
 			return nil, errWrite
 		}
-		return removeDiscoveryExtrasFromYAML(raw, "codex", map[string]bool{"test-extra": true})
+		data, _, errEdit := removeDiscoveryExtrasFromYAML(raw, "codex", map[string]bool{"test-extra": true})
+		return data, errEdit
 	})
 	got, errRead := os.ReadFile(path)
 	if !errors.Is(errUpdate, config.ErrConfigWriteConflict) || errRead != nil || !bytes.Equal(got, want) {

@@ -29,6 +29,7 @@ models:
   # In live mode, an exact Codex base rule also hides its -fast variant.
   # Fetch at startup and every 60 s per account; back off on errors.
   # Live retires IDs after three consecutive complete misses and at least 30 minutes unseen; errors interrupt the streak.
+  # These discovery listings cover chat. Catalog models of other kinds keep their current membership.
   discovery:
     codex: {mode: "off", extra: []}
     opencode-go: {mode: "off", extra: []}

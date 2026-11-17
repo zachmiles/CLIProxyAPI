@@ -45,17 +45,19 @@ type discoveryAccount struct {
 	busy          bool
 	next          time.Time
 	failure       antigravityFailureState
+	failureClass  string
+	warnAfter     time.Time
 	shadowDiff    string
 	pendingExtras map[string]bool
 }
 
-func (a *discoveryAccount) record(list []discoveredModel, err error, now time.Time) {
+func (a *discoveryAccount) record(list []discoveredModel, err error, now time.Time, covered func(discoveredModel) bool) (retired []string) {
 	if err != nil {
 		for id, row := range a.rows {
 			row.Misses = 0
 			a.rows[id] = row
 		}
-		return
+		return nil
 	}
 	if a.rows == nil {
 		a.rows = make(map[string]discoveryRow)
@@ -69,15 +71,17 @@ func (a *discoveryAccount) record(list []discoveredModel, err error, now time.Ti
 		}
 	}
 	for id, row := range a.rows {
-		if !seen[id] {
+		if !seen[id] && covered(row.Model) {
 			row.Misses = min(row.Misses+1, 3)
 			if row.Misses == 3 && now.Sub(row.LastSeen) >= modelDiscoveryRetirementFloor {
 				delete(a.rows, id)
+				retired = append(retired, id)
 			} else {
 				a.rows[id] = row
 			}
 		}
 	}
+	return retired
 }
 
 type modelDiscoveryState struct {
@@ -337,6 +341,10 @@ func (s *Service) invalidateDiscoveryAccount(id string) {
 
 func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config, auth *coreauth.Auth, channel string, account *discoveryAccount) {
 	list, errFetch := modelDiscoveryFetchers[channel](ctx, cfg, auth)
+	var catalogKinds map[string]string
+	if errFetch == nil {
+		catalogKinds = discoveryCatalogKinds(cfg, auth, channel)
+	}
 
 	d := &s.modelDiscovery
 	defer func() {
@@ -351,7 +359,13 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 	}
 	now := modelDiscoveryNow()
 	previous := d.cache[account.key]
-	account.record(list, errFetch, now)
+	retired := account.record(list, errFetch, now, func(row discoveredModel) bool {
+		kind := catalogKinds[row.ID]
+		if kind == "" {
+			kind = inventoryModelKind(&ModelInfo{DiscoveryKind: row.Kind})
+		}
+		return discoveryListingCovers(channel, kind)
+	})
 	if account.rows != nil && !reflect.DeepEqual(previous, account.rows) {
 		d.cache[account.key] = maps.Clone(account.rows)
 		d.dirty = true
@@ -367,11 +381,22 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 		}
 		account.failure = nextAntigravityFailure(account.failure, now, rand.Int64N)
 		account.next = account.failure.nextRetry
+		summary := discoveryFailureSummary(errFetch)
+		warn := summary != account.failureClass || !now.Before(account.warnAfter)
+		if warn {
+			account.failureClass = summary
+			account.warnAfter = account.next
+		}
+		retryIn := account.next.Sub(now).Round(time.Second)
 		d.mu.Unlock()
-		log.WithField("channel", channel).Debug("model discovery listing unavailable; keeping last good")
+		if warn {
+			log.Warnf("model discovery backoff channel=%s retry_in=%s: %s; keeping last good", channel, retryIn, summary)
+		}
 		return
 	}
 	account.failure = antigravityFailureState{}
+	account.failureClass = ""
+	account.warnAfter = time.Time{}
 	account.next = now.Add(modelDiscoveryInterval)
 	var removeExtras map[string]bool
 	var routesChanged bool
@@ -381,9 +406,13 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 			return reflect.DeepEqual(a.Model, b.Model)
 		})
 		removeExtras = account.pendingExtras
+		sighted := make(map[string]bool, len(list))
+		for _, row := range list {
+			sighted[strings.TrimSpace(row.ID)] = true
+		}
 		for _, id := range discoverySettings(s.currentConfig(), channel).Extra {
 			id = strings.TrimSpace(id)
-			if row, found := account.rows[id]; found && row.Misses == 0 {
+			if sighted[id] {
 				if removeExtras == nil {
 					removeExtras = make(map[string]bool)
 				}
@@ -404,6 +433,10 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 		if routesChanged {
 			s.completeModelRegistrationForAuth(ctx, auth)
 		}
+		slices.Sort(retired)
+		for _, id := range retired {
+			log.Infof("model discovery retired channel=%s id=%q", channel, id)
+		}
 		if s.removeDiscoveredExtras(ctx, auth.ID, channel, account, removeExtras) {
 			d.mu.Lock()
 			account.pendingExtras = nil
@@ -416,24 +449,64 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 
 func (s *Service) logShadowDiscoveryDiff(id, channel string, account *discoveryAccount, list []discoveredModel) {
 	served := make(map[string]bool)
+	covered := make(map[string]bool)
 	for _, model := range GlobalModelRegistry().GetModelsForClient(id) {
-		served[modelUpstreamID(model)] = true
-	}
-	var added, missing []string
-	for _, model := range list {
-		if !served[model.ID] {
-			added = append(added, model.ID)
+		upstream := modelUpstreamID(model)
+		served[upstream] = true
+		if discoveryListingCovers(channel, inventoryModelKind(model)) {
+			covered[upstream] = true
 		}
-		delete(served, model.ID)
 	}
-	missing = slices.Sorted(maps.Keys(served))
+	listed := make(map[string]bool, len(list))
+	for _, model := range list {
+		if id := strings.TrimSpace(model.ID); id != "" {
+			listed[id] = true
+		}
+	}
+	var added []string
+	for id := range listed {
+		if !served[id] {
+			added = append(added, id)
+		}
+		delete(covered, id)
+	}
+	missing := slices.Sorted(maps.Keys(covered))
 	slices.Sort(added)
-	diff := fmt.Sprintf("%q/%q", added, missing)
+	diff := fmt.Sprintf("%d/%d/%q/%q", len(listed), len(served), added, missing)
 	d := &s.modelDiscovery
 	d.mu.Lock()
 	if d.accounts[id] == account && diff != account.shadowDiff {
-		log.WithFields(log.Fields{"channel": channel, "added": len(added), "missing": len(missing)}).Info("model discovery shadow diff changed")
+		log.Infof("model discovery shadow channel=%s discovered=%d served=%d added=%d %s missing=%d %s",
+			channel, len(listed), len(served), len(added), formatDiscoveryDiffIDs(added), len(missing), formatDiscoveryDiffIDs(missing))
 		account.shadowDiff = diff
 	}
 	d.mu.Unlock()
+}
+
+func formatDiscoveryDiffIDs(ids []string) string {
+	const limit = 20
+	if len(ids) > limit {
+		return fmt.Sprintf("%q …+%d more", ids[:limit], len(ids)-limit)
+	}
+	return fmt.Sprintf("%q", ids)
+}
+
+func discoveryFailureSummary(err error) string {
+	var status discoveryListingStatus
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "listing timed out"
+	case errors.Is(err, context.Canceled):
+		return "listing canceled"
+	case errors.As(err, &status):
+		return status.Error()
+	case errors.Is(err, discoveryInvalidEndpoint):
+		return string(discoveryInvalidEndpoint)
+	case errors.Is(err, discoveryIncomplete):
+		return string(discoveryIncomplete)
+	case errors.Is(err, discoveryTransport):
+		return string(discoveryTransport)
+	default:
+		return "listing failed"
+	}
 }

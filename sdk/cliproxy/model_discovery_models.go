@@ -17,6 +17,88 @@ func modelUpstreamID(model *ModelInfo) string {
 	return model.ID
 }
 
+// inventoryModelKind classifies output, not input: vision-capable chat models
+// still belong to the chat listing. Generic provider types alone imply no kind.
+func inventoryModelKind(model *ModelInfo) string {
+	switch model.Type {
+	case registry.OpenAIImageModelType, "image":
+		return "image"
+	case "openai-video", "video":
+		return "video"
+	case "openai-audio", "openai-speech", "audio", "speech":
+		return "speech"
+	case "embedding", "embeddings":
+		return "embedding"
+	}
+	if slices.Contains(model.SupportedOutputModalities, "text") {
+		return "chat"
+	}
+	for _, kind := range []string{"video", "image", "speech", "embedding"} {
+		if slices.Contains(model.SupportedOutputModalities, kind) {
+			return kind
+		}
+	}
+	if slices.Contains(model.SupportedOutputModalities, "audio") {
+		return "speech"
+	}
+	if kind := strings.ToLower(strings.TrimSpace(model.DiscoveryKind)); kind != "" {
+		if kind == "audio" || kind == "tts" {
+			return "speech"
+		}
+		return kind
+	}
+	// Some built-ins carry only their provider type and canonical model ID.
+	id := modelUpstreamID(model)
+	switch model.Type {
+	case "openai":
+		if strings.HasPrefix(id, "gpt-image-") {
+			return "image"
+		}
+	case "xai":
+		switch {
+		case strings.HasPrefix(id, "grok-imagine-video"):
+			return "video"
+		case strings.HasPrefix(id, "grok-imagine-image"):
+			return "image"
+		case strings.HasPrefix(id, "grok-voice-"), strings.HasSuffix(id, "-tts"), strings.Contains(id, "-tts-"):
+			return "speech"
+		}
+	}
+	return "chat"
+}
+
+func discoveryListingCovers(channel, kind string) bool {
+	return slices.Contains(modelDiscoveryListedKinds[channel], kind)
+}
+
+func discoveryCatalogKinds(cfg *config.Config, auth *coreauth.Auth, channel string) map[string]string {
+	models := registry.GetStaticModelDefinitionsByChannel(channel)
+	if cfg != nil && (channel == "opencode-go" || channel == "zai") {
+		entry := configEntryForAuthIndex(auth, cfg.OpenAICompatibility)
+		if entry == nil || entry.Disabled {
+			for i := range cfg.OpenAICompatibility {
+				candidate := &cfg.OpenAICompatibility[i]
+				if !candidate.Disabled && strings.EqualFold(strings.TrimSpace(candidate.Name), channel) {
+					entry = candidate
+					break
+				}
+			}
+		}
+		if entry != nil && !entry.Disabled {
+			models = buildOpenAICompatibilityConfigModels(entry)
+		}
+	}
+	kinds := make(map[string]string)
+	for _, model := range models {
+		if model != nil {
+			if kind := inventoryModelKind(model); kind != "chat" {
+				kinds[modelUpstreamID(model)] = kind
+			}
+		}
+	}
+	return kinds
+}
+
 func withDiscoveryCompatPools(models []*ModelInfo) []*ModelInfo {
 	pools := make(map[string][]string)
 	for _, model := range models {
@@ -66,7 +148,11 @@ func (s *Service) discoveryModels(cfg *config.Config, auth *coreauth.Auth, base 
 		}
 		id := modelUpstreamID(model)
 		row, found := rows[id]
-		if rows == nil || found || extra[id] {
+		if !discoveryListingCovers(channel, inventoryModelKind(model)) {
+			// An out-of-scope model follows the catalog, not this listing's
+			// membership or metadata (including misclassified chat rows).
+			add(model, discoveredModel{}, compat)
+		} else if rows == nil || found || extra[id] {
 			add(model, row.Model, compat)
 		}
 	}

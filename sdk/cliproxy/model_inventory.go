@@ -12,7 +12,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelinventory"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -282,10 +281,7 @@ func inventoryCandidates(cfg *config.Config, auth *coreauth.Auth, channel string
 		if model == nil || model.ID == "" {
 			continue
 		}
-		kind := model.DiscoveryKind
-		if kind == "" && model.Type == registry.OpenAIImageModelType {
-			kind = "image"
-		}
+		kind := inventoryModelKind(model)
 		unprefixed := model.ID
 		if original, ok := prefixed[model.ID]; ok {
 			unprefixed = original

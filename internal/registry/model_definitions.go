@@ -376,79 +376,85 @@ func codexBuiltinImage26ModelInfo() *ModelInfo {
 
 func xaiBuiltinImageModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinImageModelID,
-		Object:      "model",
-		Created:     1735689600, // 2025-01-01
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok Imagine Image",
-		Name:        xaiBuiltinImageModelID,
-		Description: "xAI Grok image generation model.",
+		ID:                        xaiBuiltinImageModelID,
+		Object:                    "model",
+		Created:                   1735689600, // 2025-01-01
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok Imagine Image",
+		Name:                      xaiBuiltinImageModelID,
+		Description:               "xAI Grok image generation model.",
+		SupportedOutputModalities: []string{"image"},
 	}
 }
 
 func xaiBuiltinImageQualityModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinImageQualityModelID,
-		Object:      "model",
-		Created:     1735689600, // 2025-01-01
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok Imagine Image Quality",
-		Name:        xaiBuiltinImageQualityModelID,
-		Description: "xAI Grok higher-fidelity image generation model.",
+		ID:                        xaiBuiltinImageQualityModelID,
+		Object:                    "model",
+		Created:                   1735689600, // 2025-01-01
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok Imagine Image Quality",
+		Name:                      xaiBuiltinImageQualityModelID,
+		Description:               "xAI Grok higher-fidelity image generation model.",
+		SupportedOutputModalities: []string{"image"},
 	}
 }
 
 func xaiBuiltinImage20ModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinImage20ModelID,
-		Object:      "model",
-		Created:     1786060800, // 2026-08-07
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok Imagine Image 2.0",
-		Name:        xaiBuiltinImage20ModelID,
-		Description: "xAI Grok image generation model.",
+		ID:                        xaiBuiltinImage20ModelID,
+		Object:                    "model",
+		Created:                   1786060800, // 2026-08-07
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok Imagine Image 2.0",
+		Name:                      xaiBuiltinImage20ModelID,
+		Description:               "xAI Grok image generation model.",
+		SupportedOutputModalities: []string{"image"},
 	}
 }
 
 func xaiBuiltinVideoModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinVideoModelID,
-		Object:      "model",
-		Created:     1735689600, // 2025-01-01
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok Imagine Video",
-		Name:        xaiBuiltinVideoModelID,
-		Description: "xAI Grok video generation model.",
+		ID:                        xaiBuiltinVideoModelID,
+		Object:                    "model",
+		Created:                   1735689600, // 2025-01-01
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok Imagine Video",
+		Name:                      xaiBuiltinVideoModelID,
+		Description:               "xAI Grok video generation model.",
+		SupportedOutputModalities: []string{"video"},
 	}
 }
 
 func xaiBuiltinVideo15ModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinVideo15ModelID,
-		Object:      "model",
-		Created:     1735689600, // 2025-01-01
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok Imagine Video 1.5",
-		Name:        xaiBuiltinVideo15ModelID,
-		Description: "xAI Grok video generation model.",
+		ID:                        xaiBuiltinVideo15ModelID,
+		Object:                    "model",
+		Created:                   1735689600, // 2025-01-01
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok Imagine Video 1.5",
+		Name:                      xaiBuiltinVideo15ModelID,
+		Description:               "xAI Grok video generation model.",
+		SupportedOutputModalities: []string{"video"},
 	}
 }
 
 func xaiBuiltinVideo15PreviewModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinVideo15PreviewID,
-		Object:      "model",
-		Created:     1735689600, // 2025-01-01
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok Imagine Video 1.5 Preview",
-		Name:        xaiBuiltinVideo15PreviewID,
-		Description: "Compatibility alias for the xAI Grok video generation model.",
+		ID:                        xaiBuiltinVideo15PreviewID,
+		Object:                    "model",
+		Created:                   1735689600, // 2025-01-01
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok Imagine Video 1.5 Preview",
+		Name:                      xaiBuiltinVideo15PreviewID,
+		Description:               "Compatibility alias for the xAI Grok video generation model.",
+		SupportedOutputModalities: []string{"video"},
 	}
 }
 
@@ -469,27 +475,29 @@ func xaiBuiltinVideo15LiteModelInfo() *ModelInfo {
 
 func xaiBuiltinSpeechModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinSpeechModelID,
-		Object:      "model",
-		Created:     1773619200, // 2026-03-16
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok TTS",
-		Name:        xaiBuiltinSpeechModelID,
-		Description: "xAI Grok unary text-to-speech model.",
+		ID:                        xaiBuiltinSpeechModelID,
+		Object:                    "model",
+		Created:                   1773619200, // 2026-03-16
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok TTS",
+		Name:                      xaiBuiltinSpeechModelID,
+		Description:               "xAI Grok unary text-to-speech model.",
+		SupportedOutputModalities: []string{"audio"},
 	}
 }
 
 func xaiBuiltinSpeechVoiceModelInfo() *ModelInfo {
 	return &ModelInfo{
-		ID:          xaiBuiltinSpeechVoiceModelID,
-		Object:      "model",
-		Created:     1773619200, // 2026-03-16
-		OwnedBy:     "xai",
-		Type:        "xai",
-		DisplayName: "Grok Voice TTS 1.0",
-		Name:        xaiBuiltinSpeechVoiceModelID,
-		Description: "xAI Grok unary text-to-speech model.",
+		ID:                        xaiBuiltinSpeechVoiceModelID,
+		Object:                    "model",
+		Created:                   1773619200, // 2026-03-16
+		OwnedBy:                   "xai",
+		Type:                      "xai",
+		DisplayName:               "Grok Voice TTS 1.0",
+		Name:                      xaiBuiltinSpeechVoiceModelID,
+		Description:               "xAI Grok unary text-to-speech model.",
+		SupportedOutputModalities: []string{"audio"},
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -99,6 +100,7 @@ func (s *Service) removeDiscoveredExtras(ctx context.Context, authID, channel st
 		return true
 	}
 	applied := false
+	var removed []string
 	d := &s.modelDiscovery
 	var release func()
 	locked := false
@@ -126,50 +128,59 @@ func (s *Service) removeDiscoveredExtras(ctx context.Context, authID, channel st
 				return nil, nil
 			}
 		}
-		data, errEdit := removeDiscoveryExtrasFromYAML(raw, channel, ids)
+		data, removedIDs, errEdit := removeDiscoveryExtrasFromYAML(raw, channel, ids)
+		removed = removedIDs
 		applied = errEdit == nil
 		return data, errEdit
 	})
-	if errUpdate != nil && !errors.Is(errUpdate, config.ErrConfigWriteConflict) {
-		log.WithField("channel", channel).Warn("could not remove discovered extras from config")
+	if errUpdate == nil {
+		slices.Sort(removed)
+		for _, id := range slices.Compact(removed) {
+			log.Infof("model discovery removed extra channel=%s id=%q", channel, id)
+		}
+	} else if !errors.Is(errUpdate, config.ErrConfigWriteConflict) {
+		log.Warnf("model discovery could not remove extras from config channel=%s", channel)
 	}
 	return errUpdate == nil && applied
 }
 
-func removeDiscoveryExtrasFromYAML(raw []byte, channel string, ids map[string]bool) ([]byte, error) {
+func removeDiscoveryExtrasFromYAML(raw []byte, channel string, ids map[string]bool) ([]byte, []string, error) {
 	var doc yaml.Node
 	if errParse := yaml.Unmarshal(raw, &doc); errParse != nil {
-		return nil, errParse
+		return nil, nil, errParse
 	}
 	if len(doc.Content) != 1 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	settings := discoveryYAMLNode(doc.Content[0], "models", "discovery", channel)
 	mode := discoveryYAMLNode(settings, "mode")
 	list := discoveryYAMLNode(settings, "extra")
 	if mode == nil || mode.Value != "live" || list == nil || list.Kind != yaml.SequenceNode {
-		return nil, nil
+		return nil, nil, nil
 	}
 	kept := list.Content[:0]
+	var removed []string
 	for _, entry := range list.Content {
-		if entry.Kind != yaml.ScalarNode || !ids[strings.TrimSpace(entry.Value)] {
+		if id := strings.TrimSpace(entry.Value); entry.Kind == yaml.ScalarNode && ids[id] {
+			removed = append(removed, id)
+		} else {
 			kept = append(kept, entry)
 		}
 	}
-	if len(kept) == len(list.Content) {
-		return nil, nil
+	if len(removed) == 0 {
+		return nil, nil, nil
 	}
 	list.Content = kept
 	var out bytes.Buffer
 	encoder := yaml.NewEncoder(&out)
 	encoder.SetIndent(2)
 	if errEncode := encoder.Encode(&doc); errEncode != nil {
-		return nil, errEncode
+		return nil, nil, errEncode
 	}
 	if errClose := encoder.Close(); errClose != nil {
-		return nil, errClose
+		return nil, nil, errClose
 	}
-	return out.Bytes(), nil
+	return out.Bytes(), removed, nil
 }
 
 func discoveryYAMLNode(root *yaml.Node, keys ...string) *yaml.Node {

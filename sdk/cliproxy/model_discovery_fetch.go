@@ -49,6 +49,30 @@ var modelDiscoveryFetchers = map[string]discoveryFetchFunc{
 	"zai":         fetchDiscoveryZAI,
 }
 
+// Coverage is about what an omission proves, not which positive rows can be
+// parsed. Go exposes kind metadata but non-chat completeness is unverified.
+var modelDiscoveryListedKinds = map[string][]string{
+	"codex":       {"chat"}, // Codex CLI catalog, not the image endpoints.
+	"opencode-go": {"chat"}, // Console Go inference catalog.
+	"claude":      {"chat"}, // Anthropic Models API.
+	"xai":         {"chat"}, // CLI chat proxy, not Imagine or speech.
+	"zai":         {"chat"}, // Coding Plan.
+}
+
+type discoveryListingStatus int
+
+func (s discoveryListingStatus) Error() string { return fmt.Sprintf("upstream HTTP %d", s) }
+
+type discoveryListingError string
+
+func (e discoveryListingError) Error() string { return string(e) }
+
+const (
+	discoveryInvalidEndpoint discoveryListingError = "invalid listing endpoint"
+	discoveryIncomplete      discoveryListingError = "incomplete listing response"
+	discoveryTransport       discoveryListingError = "listing transport failed"
+)
+
 var modelDiscoveryEndpoints = map[string]string{
 	"codex":       codexlisting.Endpoint,
 	"opencode-go": "https://opencode.ai/inference/go/v1/models",
@@ -166,7 +190,7 @@ func fetchDiscoveryCodex(ctx context.Context, cfg *config.Config, auth *coreauth
 	req, err := codexlisting.NewRequest(ctx, modelDiscoveryEndpoints[channel], codexlisting.ClientVersion,
 		discoveryMetadataString(auth, "access_token"), discoveryMetadataString(auth, "account_id"), auth.Attributes)
 	if err != nil {
-		return nil, errors.New("codex model discovery: invalid listing request")
+		return nil, fmt.Errorf("codex model discovery: %w", discoveryInvalidEndpoint)
 	}
 
 	page, err := readDiscoveryPage(discoveryHTTPClient(ctx, cfg, auth), req, channel)
@@ -200,7 +224,7 @@ func fetchDiscoveryOpenCode(ctx context.Context, cfg *config.Config, auth *corea
 	if base = strings.TrimRight(base, "/"); base != "" && base != opencodeauth.BaseURL {
 		u, err := url.Parse(base)
 		if err != nil {
-			return nil, errors.New("opencode-go model discovery: invalid inference base URL")
+			return nil, fmt.Errorf("opencode-go model discovery: %w", discoveryInvalidEndpoint)
 		}
 		// Console inference uses /openai/v1, but the catalog is beside it at /v1.
 		if strings.HasSuffix(u.Path, "/openai/v1") {
@@ -269,15 +293,15 @@ func fetchDiscoveryClaude(ctx context.Context, cfg *config.Config, auth *coreaut
 		case ojson.True:
 			after := discoveryString(page.Get("last_id"))
 			if strings.TrimSpace(after) == "" || len(rows) == 0 {
-				return nil, errors.New("claude model discovery: incomplete pagination")
+				return nil, fmt.Errorf("claude model discovery: incomplete pagination: %w", discoveryIncomplete)
 			}
 			if _, duplicate := seen[after]; duplicate {
-				return nil, errors.New("claude model discovery: repeated pagination cursor")
+				return nil, fmt.Errorf("claude model discovery: repeated pagination cursor: %w", discoveryIncomplete)
 			}
 			seen[after] = struct{}{}
 			query.Set("after_id", after)
 		default:
-			return nil, errors.New("claude model discovery: expected boolean has_more")
+			return nil, fmt.Errorf("claude model discovery: expected boolean has_more: %w", discoveryIncomplete)
 		}
 	}
 }
@@ -318,7 +342,7 @@ func fetchDiscoveryZAI(ctx context.Context, cfg *config.Config, auth *coreauth.A
 	}
 	u, err := url.Parse(strings.TrimSpace(auth.Attributes["base_url"]))
 	if err != nil {
-		return nil, errors.New("zai model discovery: invalid Coding Plan base URL")
+		return nil, fmt.Errorf("zai model discovery: %w", discoveryInvalidEndpoint)
 	}
 	req, err := newDiscoveryRequest(ctx, channel, u.JoinPath("models").String(), strings.TrimSpace(auth.Attributes["api_key"]), nil)
 	if err != nil {
@@ -334,7 +358,7 @@ func fetchDiscoveryZAI(ctx context.Context, cfg *config.Config, auth *coreauth.A
 func newDiscoveryRequest(ctx context.Context, channel, endpoint, token string, query url.Values) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil || req.URL.Host == "" || (req.URL.Scheme != "https" && req.URL.Scheme != "http") {
-		return nil, fmt.Errorf("%s model discovery: invalid listing URL", channel)
+		return nil, fmt.Errorf("%s model discovery: %w", channel, discoveryInvalidEndpoint)
 	}
 	if len(query) != 0 {
 		q := req.URL.Query()
@@ -368,7 +392,7 @@ func readDiscoveryPage(client *http.Client, req *http.Request, channel string) (
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.StatusCode == http.StatusPartialContent {
-		return ojson.Result{}, fmt.Errorf("%s model discovery: upstream HTTP %d", channel, resp.StatusCode)
+		return ojson.Result{}, fmt.Errorf("%s model discovery: %w", channel, discoveryListingStatus(resp.StatusCode))
 	}
 	const maxListingBytes = 8 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListingBytes+1))
@@ -376,10 +400,10 @@ func readDiscoveryPage(client *http.Client, req *http.Request, channel string) (
 		return ojson.Result{}, discoveryRequestError(req.Context(), channel, "could not read listing response")
 	}
 	if len(body) > maxListingBytes {
-		return ojson.Result{}, fmt.Errorf("%s model discovery: listing response too large", channel)
+		return ojson.Result{}, fmt.Errorf("%s model discovery: listing response too large: %w", channel, discoveryIncomplete)
 	}
 	if !ojson.ValidBytes(body) {
-		return ojson.Result{}, fmt.Errorf("%s model discovery: malformed listing JSON", channel)
+		return ojson.Result{}, fmt.Errorf("%s model discovery: malformed listing JSON: %w", channel, discoveryIncomplete)
 	}
 	return ojson.ParseBytes(body), nil
 }
@@ -390,20 +414,20 @@ func discoveryRequestError(ctx context.Context, channel, message string) error {
 	}
 	// Transport errors can include the configured URL; upstream error bodies
 	// can echo submitted credentials. Do not expose either to discovery logs.
-	return fmt.Errorf("%s model discovery: %s", channel, message)
+	return fmt.Errorf("%s model discovery: %s: %w", channel, message, discoveryTransport)
 }
 
 func parseDiscoveryRows(page ojson.Result, channel, arrayKey, idKey string, parseRow func(ojson.Result, *discoveredModel)) ([]discoveredModel, error) {
 	list := page.Get(arrayKey)
 	if !page.IsObject() || !list.IsArray() {
-		return nil, fmt.Errorf("%s model discovery: expected %s array", channel, arrayKey)
+		return nil, fmt.Errorf("%s model discovery: expected %s array: %w", channel, arrayKey, discoveryIncomplete)
 	}
 	rows := list.Array()
 	models := make([]discoveredModel, 0, len(rows))
 	for i, row := range rows {
 		id := discoveryString(row.Get(idKey))
 		if !row.IsObject() || strings.TrimSpace(id) == "" {
-			return nil, fmt.Errorf("%s model discovery: missing or invalid %s in row %d", channel, idKey, i)
+			return nil, fmt.Errorf("%s model discovery: missing or invalid %s in row %d: %w", channel, idKey, i, discoveryIncomplete)
 		}
 		model := discoveredModel{
 			ID:          id,
