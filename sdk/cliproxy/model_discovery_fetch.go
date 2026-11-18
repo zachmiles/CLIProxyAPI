@@ -24,16 +24,18 @@ import (
 
 // discoveredModel is one upstream listing row, normalized. Zero/empty means unknown.
 type discoveredModel struct {
-	ID            string
-	DisplayName   string
-	Kind          string
-	Family        string
-	ContextTokens int64
-	InputTokens   int64
-	OutputTokens  int64
-	Efforts       []string
-	ServiceTiers  []string
-	Created       int64
+	ID               string
+	DisplayName      string
+	Kind             string
+	Family           string
+	ContextTokens    int64
+	MaxContextTokens int64
+	InputTokens      int64
+	OutputTokens     int64
+	Efforts          []string
+	DefaultEffort    string
+	ServiceTiers     []string
+	Created          int64
 }
 
 var errDiscoveryNotEligible = errors.New("model discovery: auth not eligible")
@@ -201,11 +203,10 @@ func fetchDiscoveryCodex(ctx context.Context, cfg *config.Config, auth *coreauth
 	// The command's stricter offline catalog and baseline injection do not apply.
 	return parseDiscoveryRows(page, channel, "models", "slug", func(row ojson.Result, model *discoveredModel) {
 		model.Kind = "chat"
-		model.ContextTokens = discoveryNumber(row.Get("max_context_window"))
-		if model.ContextTokens == 0 {
-			model.ContextTokens = discoveryNumber(row.Get("context_window"))
-		}
+		model.ContextTokens = discoveryNumber(row.Get("context_window"))
+		model.MaxContextTokens = discoveryNumber(row.Get("max_context_window"))
 		model.Efforts = discoveryLabels(row.Get("supported_reasoning_levels"), "effort", nil)
+		model.DefaultEffort = discoveryString(row.Get("default_reasoning_level"))
 		model.ServiceTiers = discoveryLabels(row.Get("service_tiers"), "id", nil)
 		model.ServiceTiers = discoveryLabels(row.Get("additional_speed_tiers"), "", model.ServiceTiers)
 	})

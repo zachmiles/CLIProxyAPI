@@ -38,7 +38,7 @@ func TestDiscoveryFetchListings(t *testing.T) {
 				"service_tiers":[{"id":"priority","name":"Fast"}],"additional_speed_tiers":["fast"]},
 				{"slug":"acme-fallback-window","context_window":128000}]}`,
 			want: []discoveredModel{
-				{ID: "Acme/model.1", DisplayName: "New Model", Kind: "chat", ContextTokens: 872000, Efforts: []string{"low", "high"}, ServiceTiers: []string{"priority", "fast"}},
+				{ID: "Acme/model.1", DisplayName: "New Model", Kind: "chat", ContextTokens: 272000, MaxContextTokens: 872000, Efforts: []string{"low", "high"}, ServiceTiers: []string{"priority", "fast"}},
 				{ID: "acme-fallback-window", Kind: "chat", ContextTokens: 128000},
 			},
 		},

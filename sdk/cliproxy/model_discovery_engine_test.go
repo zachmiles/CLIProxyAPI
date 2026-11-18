@@ -268,6 +268,97 @@ func TestDiscoveryExtraCodexParityAndConfigV8Precondition(t *testing.T) {
 	}
 }
 
+func TestDiscoveryCodexLivePreservesCatalogMetadata(t *testing.T) {
+	const terra = "gpt-6.1-terra"
+	const reserve = "gpt-fixture-reserve"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[
+			{"slug":"gpt-6.1-terra","display_name":"Upstream Terra","context_window":500000,"max_context_window":872000,"supported_reasoning_levels":[{"effort":"medium"}],"default_reasoning_level":"medium","service_tiers":[{"id":"other"}]},
+			{"slug":"gpt-fixture-reserve","display_name":"A Reserve","context_window":123456,"max_context_window":654321,"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],"default_reasoning_level":"high"}
+		]}`))
+	}))
+	defer upstream.Close()
+	if registry.HasCodexClientModelTemplate(reserve) {
+		t.Fatal("new-model fixture must not have a Codex client template")
+	}
+	oldEndpoint := modelDiscoveryEndpoints["codex"]
+	modelDiscoveryEndpoints["codex"] = upstream.URL
+	t.Cleanup(func() { modelDiscoveryEndpoints["codex"] = oldEndpoint })
+
+	for _, retire := range []bool{true, false} {
+		name := "add-only"
+		if retire {
+			name = "retire"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := &config.Config{}
+			s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+			auth := registerDiscoveryEngineTestAuth(t, s, "codex")
+			handler := openai.NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, s.coreManager))
+			mgmt := management.NewHandler(cfg, "", s.coreManager)
+			mgmt.SetModelInventorySource(s)
+			router := gin.New()
+			router.GET("/v1/models", handler.OpenAIModels)
+			router.GET("/inventory", mgmt.GetModelInventory)
+			get := func(path, id string) map[string]ojson.Result {
+				t.Helper()
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("%s: HTTP %d", path, recorder.Code)
+				}
+				rows := make(map[string]ojson.Result)
+				for _, row := range ojson.ParseBytes(recorder.Body.Bytes()).Get("models").Array() {
+					rows[row.Get(id).String()] = row
+				}
+				return rows
+			}
+			const catalog = "/v1/models?client_version=0.159.0"
+			off := get(catalog, "slug")
+			offInventory := get("/inventory", "id")
+			if off[terra].Get("context_window").Int() != 500000 || off[terra].Get("default_reasoning_level").String() != "low" {
+				t.Fatal("off fixture does not match Terra baseline")
+			}
+			cfg.Models.Discovery = map[string]registry.ModelDiscovery{"codex": {Mode: "live", Retire: &retire}}
+			discoveryTestRunner(t, s, auth, func(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) ([]discoveredModel, error) {
+				list, err := fetchDiscoveryCodex(ctx, cfg, auth)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keep membership constant so this tests metadata in both modes.
+				for id := range off {
+					if id != terra {
+						list = append(list, discoveredModel{ID: id})
+					}
+				}
+				return list, nil
+			})()
+			live := get(catalog, "slug")
+			for id, before := range off {
+				if live[id].Raw != before.Raw {
+					t.Errorf("shared Codex row changed: %s", id)
+				}
+			}
+			row := live[reserve]
+			if row.Get("context_window").Int() != 123456 || row.Get("max_context_window").Int() != 654321 ||
+				row.Get("default_reasoning_level").String() != "high" || row.Get("display_name").String() != "A Reserve" {
+				t.Errorf("template-less row got windows %d/%d and default %q",
+					row.Get("context_window").Int(), row.Get("max_context_window").Int(), row.Get("default_reasoning_level").String())
+			}
+			inventory := get("/inventory", "id")
+			if got := inventory[terra].Get("limits.context").Int(); got != 500000 {
+				t.Errorf("Terra inventory effective context = %d, want 500000", got)
+			}
+			if inventory[terra].Get("efforts").Raw != offInventory[terra].Get("efforts").Raw {
+				t.Error("Terra inventory reasoning levels changed")
+			}
+			if got := inventory[reserve].Get("limits.context").Int(); got != 123456 {
+				t.Errorf("reserve inventory effective context = %d, want 123456", got)
+			}
+		})
+	}
+}
+
 func TestDiscoveryConfigWriteConflictDoesNotClobber(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	initial := []byte("config-version: 8\nmodels:\n  discovery:\n    codex: {mode: live, extra: [test-extra]}\n")

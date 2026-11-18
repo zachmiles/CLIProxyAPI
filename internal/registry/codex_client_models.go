@@ -20,11 +20,18 @@ type codexClientModelsPayload struct {
 }
 
 type codexClientModelsStore struct {
-	mu                sync.RWMutex
-	data              []byte
-	revision          uint64
-	responsesLiteMap  map[string]bool
-	thinkingLevelsMap map[string][]string
+	mu               sync.RWMutex
+	data             []byte
+	revision         uint64
+	responsesLiteMap map[string]bool
+	metadata         map[string]CodexClientModelMetadata
+}
+
+// CodexClientModelMetadata is the template metadata needed during discovery.
+type CodexClientModelMetadata struct {
+	DisplayName   string
+	ContextWindow int
+	Efforts       []string
 }
 
 var codexClientCatalogStore = &codexClientModelsStore{}
@@ -79,21 +86,21 @@ func HasCodexClientModelTemplate(slug string) bool {
 // CodexClientModelThinkingLevels returns a copy of the supported reasoning
 // levels for slug in the active Codex client model catalog, or nil if absent.
 func CodexClientModelThinkingLevels(slug string) []string {
-	slug = strings.ToLower(strings.TrimSpace(slug))
-	if slug == "" {
-		return nil
-	}
+	metadata, _ := LookupCodexClientModelMetadata(slug)
+	return metadata.Efforts
+}
+
+// LookupCodexClientModelMetadata returns a copy of the curated template metadata.
+func LookupCodexClientModelMetadata(slug string) (CodexClientModelMetadata, bool) {
 	codexClientCatalogStore.mu.RLock()
 	defer codexClientCatalogStore.mu.RUnlock()
-	levels := codexClientCatalogStore.thinkingLevelsMap[slug]
-	if len(levels) == 0 {
-		return nil
-	}
-	return append([]string(nil), levels...)
+	metadata, ok := codexClientCatalogStore.metadata[strings.ToLower(strings.TrimSpace(slug))]
+	metadata.Efforts = append([]string(nil), metadata.Efforts...)
+	return metadata, ok
 }
 
 func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
-	responsesLiteMap, thinkingLevelsMap, err := parseAndValidateCodexClientModelsJSON(data)
+	responsesLiteMap, metadata, err := parseAndValidateCodexClientModelsJSON(data)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", source, err)
 	}
@@ -106,7 +113,7 @@ func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
 	}
 	codexClientCatalogStore.data = cloned
 	codexClientCatalogStore.responsesLiteMap = responsesLiteMap
-	codexClientCatalogStore.thinkingLevelsMap = thinkingLevelsMap
+	codexClientCatalogStore.metadata = metadata
 	codexClientCatalogStore.revision++
 	return true, nil
 }
@@ -118,7 +125,7 @@ func ValidateCodexClientModelsJSON(data []byte) error {
 	return err
 }
 
-func parseAndValidateCodexClientModelsJSON(data []byte) (map[string]bool, map[string][]string, error) {
+func parseAndValidateCodexClientModelsJSON(data []byte) (map[string]bool, map[string]CodexClientModelMetadata, error) {
 	var payload codexClientModelsPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, nil, fmt.Errorf("decode Codex client model catalog: %w", err)
@@ -129,7 +136,7 @@ func parseAndValidateCodexClientModelsJSON(data []byte) (map[string]bool, map[st
 
 	seen := make(map[string]struct{}, len(payload.Models))
 	responsesLiteMap := make(map[string]bool, len(payload.Models))
-	thinkingLevelsMap := make(map[string][]string, len(payload.Models))
+	metadata := make(map[string]CodexClientModelMetadata, len(payload.Models))
 	for i, model := range payload.Models {
 		slug, err := requiredCodexClientModelString(model, "slug")
 		if err != nil {
@@ -146,21 +153,17 @@ func parseAndValidateCodexClientModelsJSON(data []byte) (map[string]bool, map[st
 		lowerSlug := strings.ToLower(slug)
 		lite, _ := model["use_responses_lite"].(bool)
 		responsesLiteMap[lowerSlug] = lite
-		if rawLevels, ok := model["supported_reasoning_levels"].([]any); ok {
-			levels := make([]string, 0, len(rawLevels))
-			for _, rawLevel := range rawLevels {
-				if entry, okMap := rawLevel.(map[string]any); okMap {
-					if effort, okEffort := entry["effort"].(string); okEffort && strings.TrimSpace(effort) != "" {
-						levels = append(levels, strings.TrimSpace(effort))
-					}
-				}
-			}
-			if len(levels) > 0 {
-				thinkingLevelsMap[lowerSlug] = levels
-			}
+		displayName, _ := requiredCodexClientModelString(model, "display_name")
+		contextWindow, _ := requiredCodexClientModelInteger(model, "context_window", true)
+		rawLevels := model["supported_reasoning_levels"].([]any) // validated above
+		levels := make([]string, 0, len(rawLevels))
+		for _, rawLevel := range rawLevels {
+			effort, _ := requiredCodexClientModelString(rawLevel.(map[string]any), "effort")
+			levels = append(levels, effort)
 		}
+		metadata[lowerSlug] = CodexClientModelMetadata{DisplayName: displayName, ContextWindow: int(contextWindow), Efforts: levels}
 	}
-	return responsesLiteMap, thinkingLevelsMap, nil
+	return responsesLiteMap, metadata, nil
 }
 
 func validateCodexClientModel(model map[string]any) error {

@@ -145,7 +145,7 @@ func (s *Service) discoveryModels(cfg *config.Config, auth *coreauth.Auth, base 
 	}
 	addNew := func(id string, row discoveredModel) {
 		model := discoveryCatalogModel(channel, id)
-		model.DiscoveryAddOnlyAddition = addOnly
+		model.DiscoveryCatalogAddition = addOnly || channel == "codex" && settings.Mode == "live"
 		add(model, row, false)
 	}
 	for _, model := range base {
@@ -220,6 +220,9 @@ func discoveryModelInfo(channel string, model *ModelInfo, row discoveredModel, c
 		return model
 	}
 	out := cloneModelInfoForCatalogRoute(model)
+	if channel == "codex" {
+		return codexDiscoveryModelInfo(out, row)
+	}
 	out.Discovery = true
 	if row.DisplayName != "" && !configuredCompat {
 		out.DisplayName = row.DisplayName
@@ -239,7 +242,7 @@ func discoveryModelInfo(channel string, model *ModelInfo, row discoveredModel, c
 	}
 	if row.ContextTokens > 0 {
 		out.ContextLength = int(row.ContextTokens)
-		if channel == "codex" || out.MaxContextLength > 0 {
+		if out.MaxContextLength > 0 {
 			out.MaxContextLength = out.ContextLength
 		}
 	}
@@ -266,6 +269,51 @@ func discoveryModelInfo(channel string, model *ModelInfo, row discoveredModel, c
 		out.Created = row.Created
 	}
 	return &out
+}
+
+func codexDiscoveryModelInfo(model ModelInfo, row discoveredModel) *ModelInfo {
+	template, templated := registry.LookupCodexClientModelMetadata(modelUpstreamID(&model))
+	// A known catalog title (including an operator's display-name override)
+	// stays as-is, matching the existing Codex client presentation.
+	if model.DisplayName == "" || model.Discovery && templated {
+		model.DisplayName = template.DisplayName
+	}
+	if model.ContextLength == 0 {
+		model.ContextLength = template.ContextWindow
+	}
+	if model.Thinking == nil && len(template.Efforts) != 0 {
+		model.Thinking = &registry.ThinkingSupport{Levels: template.Efforts}
+	}
+	if templated {
+		// Leave template reasoning, tiers, and windows to the client catalog.
+		// In particular, don't set ExplicitThinking or MaxContextLength from a listing.
+		return &model
+	}
+
+	if model.DisplayName == "" || model.Discovery && model.DisplayName == model.ID && row.DisplayName != "" {
+		model.DisplayName = row.DisplayName
+	}
+	if model.ContextLength == 0 {
+		model.ContextLength = int(row.ContextTokens)
+	}
+	if model.InputTokenLimit == 0 {
+		model.InputTokenLimit = int(row.InputTokens)
+	}
+	if model.OutputTokenLimit == 0 && model.MaxCompletionTokens == 0 {
+		model.OutputTokenLimit = int(row.OutputTokens)
+		model.MaxCompletionTokens = model.OutputTokenLimit
+	}
+	if model.Thinking == nil && len(row.Efforts) != 0 {
+		model.Thinking = &registry.ThinkingSupport{Levels: slices.Clone(row.Efforts)}
+		model.DiscoveryDefaultEffort = row.DefaultEffort
+	}
+	if model.Created == 0 {
+		model.Created = row.Created
+	}
+	model.Discovery = true
+	model.DiscoveryMaxContext = int(row.MaxContextTokens)
+	model.DiscoveryServiceTiers = slices.Clone(row.ServiceTiers)
+	return &model
 }
 
 // A fast alias is an existing routed variant, not a separate upstream slug.

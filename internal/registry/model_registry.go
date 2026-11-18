@@ -44,11 +44,13 @@ type ModelInfo struct {
 	// It is internal and must not be exposed in model-list responses.
 	MetadataModelID string `json:"-"`
 	Discovery       bool   `json:"-"`
-	// DiscoveryAddOnlyAddition marks routes absent from the off-mode catalog.
-	DiscoveryAddOnlyAddition bool     `json:"-"`
+	// DiscoveryCatalogAddition marks routes absent from the off-mode catalog.
+	DiscoveryCatalogAddition bool     `json:"-"`
 	DiscoveryKind            string   `json:"-"`
 	DiscoveryFamily          string   `json:"-"`
 	DiscoveryServiceTiers    []string `json:"-"`
+	DiscoveryMaxContext      int      `json:"-"`
+	DiscoveryDefaultEffort   string   `json:"-"`
 	// DiscoveryUpstreams is the eligible upstream pool for this live compat route.
 	DiscoveryUpstreams []string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.

@@ -33,6 +33,8 @@ type discoveryRow struct {
 	Model    discoveredModel
 	Misses   int
 	LastSeen time.Time `yaml:"last-seen,omitempty"`
+	// Older Codex entries may have stored the extended maximum as context.
+	EffectiveContext bool `yaml:"effective-context,omitempty"`
 }
 
 type discoveryAccount struct {
@@ -67,7 +69,7 @@ func (a *discoveryAccount) record(list []discoveredModel, err error, now time.Ti
 		row.ID = strings.TrimSpace(row.ID)
 		if row.ID != "" {
 			seen[row.ID] = true
-			a.rows[row.ID] = discoveryRow{Model: row, LastSeen: now.UTC()}
+			a.rows[row.ID] = discoveryRow{Model: row, LastSeen: now.UTC(), EffectiveContext: true}
 		}
 	}
 	for id, row := range a.rows {
@@ -173,7 +175,18 @@ func (s *Service) discoveryRows(cfg *config.Config, auth *coreauth.Auth, channel
 	d := &s.modelDiscovery
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return maps.Clone(d.cache[key])
+	rows := maps.Clone(d.cache[key])
+	if channel == "codex" {
+		for id, row := range rows {
+			if !row.EffectiveContext {
+				// Keep membership and other metadata, but don't guess which
+				// window older listings stored. A fresh sighting restores it.
+				row.Model.ContextTokens = 0
+				rows[id] = row
+			}
+		}
+	}
+	return rows
 }
 
 func (s *Service) runProviderModelDiscovery(ctx context.Context) {

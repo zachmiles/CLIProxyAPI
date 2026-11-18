@@ -210,12 +210,12 @@ func applyCodexClientNonTemplatePriorities(result []map[string]any, templates ma
 			index:       index,
 			displayName: displayName,
 			slug:        slug,
-			addition:    info != nil && info.DiscoveryAddOnlyAddition,
+			addition:    info != nil && info.DiscoveryCatalogAddition,
 		})
 	}
 
 	sort.SliceStable(pending, func(i, j int) bool {
-		// Add-only models must not renumber non-template catalog rows.
+		// Newly discovered models must not renumber non-template catalog rows.
 		if pending[i].addition != pending[j].addition {
 			return !pending[i].addition
 		}

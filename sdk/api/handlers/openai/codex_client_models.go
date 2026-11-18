@@ -54,8 +54,27 @@ func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) ma
 			if templateID == "" {
 				templateID = id
 			}
-			if info.ContextLength <= 0 && len(providers) == 1 && providers[0] == "codex" && !registry.HasCodexClientModelTemplate(templateID) {
+			if len(providers) != 1 || providers[0] != "codex" || registry.HasCodexClientModelTemplate(templateID) {
+				if !slices.Contains(providers, "codex") && info.DiscoveryServiceTiers != nil {
+					applyDiscoveredCodexTiers(row, info.DiscoveryServiceTiers)
+				}
+				continue
+			}
+			if info.ContextLength <= 0 {
 				row["context_window"], row["max_context_window"] = 0, 0
+			}
+			if info.DiscoveryMaxContext > 0 {
+				row["max_context_window"] = max(info.DiscoveryMaxContext, info.ContextLength)
+			}
+			if effort := info.DiscoveryDefaultEffort; effort != "" {
+				if levels, ok := row["supported_reasoning_levels"].([]any); ok {
+					for _, level := range levels {
+						if fields, ok := level.(map[string]any); ok && fields["effort"] == effort {
+							row["default_reasoning_level"] = effort
+							break
+						}
+					}
+				}
 			}
 			if info.DiscoveryServiceTiers != nil {
 				applyDiscoveredCodexTiers(row, info.DiscoveryServiceTiers)
