@@ -192,6 +192,7 @@ func applyCodexClientNonTemplatePriorities(result []map[string]any, templates ma
 		index       int
 		displayName string
 		slug        string
+		addition    bool
 	}
 
 	pending := make([]nonTemplateEntry, 0)
@@ -204,14 +205,20 @@ func applyCodexClientNonTemplatePriorities(result []map[string]any, templates ma
 		if displayName == "" {
 			displayName = slug
 		}
+		info := registry.LookupModelInfo(slug)
 		pending = append(pending, nonTemplateEntry{
 			index:       index,
 			displayName: displayName,
 			slug:        slug,
+			addition:    info != nil && info.DiscoveryAddOnlyAddition,
 		})
 	}
 
 	sort.SliceStable(pending, func(i, j int) bool {
+		// Add-only models must not renumber non-template catalog rows.
+		if pending[i].addition != pending[j].addition {
+			return !pending[i].addition
+		}
 		left := strings.ToLower(pending[i].displayName)
 		right := strings.ToLower(pending[j].displayName)
 		if left == right {

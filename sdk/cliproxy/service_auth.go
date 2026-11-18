@@ -650,8 +650,12 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	}
 	id = strings.TrimSpace(id)
 	var provider string
+	var cacheKey string
 	if existing, ok := s.coreManager.GetByID(id); ok && existing != nil {
 		provider = strings.TrimSpace(existing.Provider)
+		if channel := discoveryChannelForAuth(existing); channel != "" {
+			cacheKey = discoveryKey(s.currentConfig(), existing, channel)
+		}
 	}
 	// Invalidate the auth before advancing the registry epoch. Otherwise a
 	// refresh can adopt the tombstone epoch while the auth still exists and
@@ -659,7 +663,7 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	s.coreManager.Remove(ctx, id)
 	GlobalModelRegistry().UnregisterClient(id)
 	s.removeInventory(id)
-	s.invalidateDiscoveryAccount(id)
+	s.invalidateDiscoveryAccount(id, cacheKey)
 	s.cancelStaleAntigravityProbes(id)
 	if strings.EqualFold(provider, "codex") {
 		executor.CloseCodexWebsocketSessionsForAuthID(id, "auth_removed")

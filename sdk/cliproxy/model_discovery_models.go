@@ -137,10 +137,16 @@ func (s *Service) discoveryModels(cfg *config.Config, auth *coreauth.Auth, base 
 	}
 	var out []*ModelInfo
 	seen := make(map[string]bool)
+	addOnly := settings.Mode == "live" && !settings.RetirementEnabled()
 	add := func(model *ModelInfo, row discoveredModel, configuredCompat bool) {
 		out = append(out, discoveryModelInfo(channel, model, row, configuredCompat))
 		seen[modelUpstreamID(model)] = true
 		seen[model.ID] = true
+	}
+	addNew := func(id string, row discoveredModel) {
+		model := discoveryCatalogModel(channel, id)
+		model.DiscoveryAddOnlyAddition = addOnly
+		add(model, row, false)
 	}
 	for _, model := range base {
 		if model == nil {
@@ -152,32 +158,31 @@ func (s *Service) discoveryModels(cfg *config.Config, auth *coreauth.Auth, base 
 			// An out-of-scope model follows the catalog, not this listing's
 			// membership or metadata (including misclassified chat rows).
 			add(model, discoveredModel{}, compat)
-		} else if rows == nil || found || extra[id] {
+		} else if rows == nil || addOnly || found || extra[id] {
 			add(model, row.Model, compat)
 		}
 	}
-	// Claude discovery only gates models already in the existing pipeline.
-	// A raw extra that does not match a catalog row can only surface through
-	// an existing non-fork alias, never as a new raw Claude ID.
-	if channel == "claude" {
+	// Claude's default policy only gates existing routes. Add-only uses the
+	// same union as the other channels; inventory still projects Claude aliases.
+	if channel == "claude" && !addOnly {
 		aliases := oauthModelAliasesForAuth(cfg, channel, auth.Attributes)
 		for _, alias := range aliases {
 			id := strings.TrimSpace(alias.Name)
 			row, found := rows[id]
 			if id != "" && !alias.Fork && !seen[id] && (found || extra[id]) {
-				add(discoveryCatalogModel(channel, id), row.Model, false)
+				addNew(id, row.Model)
 			}
 		}
 		return out
 	}
 	for _, id := range slices.Sorted(maps.Keys(rows)) {
 		if !seen[id] {
-			add(discoveryCatalogModel(channel, id), rows[id].Model, false)
+			addNew(id, rows[id].Model)
 		}
 	}
 	for _, id := range slices.Sorted(maps.Keys(extra)) {
 		if !seen[id] {
-			add(discoveryCatalogModel(channel, id), discoveredModel{}, false)
+			addNew(id, discoveredModel{})
 		}
 	}
 	return out

@@ -30,6 +30,8 @@ models:
   # Fetch at startup and every 60 s per account; back off on errors.
   # Live retires IDs after three consecutive complete misses and at least 30 minutes unseen; errors interrupt the streak.
   # These discovery listings cover chat. Catalog models of other kinds keep their current membership.
+  # In live mode, retire: false keeps catalog and discovered IDs indefinitely and leaves extras in config.
+  # Retirement defaults to true for every channel.
   discovery:
     codex: {mode: "off", extra: []}
     opencode-go: {mode: "off", extra: []}

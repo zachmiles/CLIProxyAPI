@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // CatalogSources overrides the source of each model catalog independently.
@@ -16,8 +18,33 @@ type CatalogSources struct {
 }
 
 type ModelDiscovery struct {
-	Mode  string   `yaml:"mode,omitempty" json:"mode,omitempty"`
-	Extra []string `yaml:"extra,omitempty" json:"extra,omitempty"`
+	Mode   string   `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Extra  []string `yaml:"extra,omitempty" json:"extra,omitempty"`
+	Retire *bool    `yaml:"retire,omitempty" json:"retire,omitempty"`
+}
+
+// RetirementEnabled defaults to true when the option is unspecified.
+func (m ModelDiscovery) RetirementEnabled() bool {
+	return m.Retire == nil || *m.Retire
+}
+
+func (m *ModelDiscovery) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			if node.Content[i].Value != "retire" {
+				continue
+			}
+			value := node.Content[i+1]
+			if value.Kind == yaml.AliasNode {
+				value = value.Alias
+			}
+			if value == nil || value.ShortTag() != "!!bool" {
+				return fmt.Errorf("model discovery retire must be a boolean")
+			}
+		}
+	}
+	type plain ModelDiscovery
+	return node.Decode((*plain)(m))
 }
 
 // Validate checks catalog sources and per-channel discovery settings.

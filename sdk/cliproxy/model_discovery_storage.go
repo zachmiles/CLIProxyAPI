@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
@@ -120,7 +121,9 @@ func (s *Service) removeDiscoveredExtras(ctx context.Context, authID, channel st
 		release = unlock
 		d.mu.Lock()
 		locked = true
-		if ctx.Err() != nil || d.accounts[authID] != account || d.dirty || !s.discoveryCredentialCurrent(s.currentConfig(), auth, account) {
+		cfg := s.currentConfig()
+		if ctx.Err() != nil || d.accounts[authID] != account || d.dirty || !s.discoveryCredentialCurrent(cfg, auth, account) ||
+			!discoverySettings(cfg, channel).RetirementEnabled() {
 			return nil, nil
 		}
 		for id := range ids {
@@ -156,6 +159,13 @@ func removeDiscoveryExtrasFromYAML(raw []byte, channel string, ids map[string]bo
 	mode := discoveryYAMLNode(settings, "mode")
 	list := discoveryYAMLNode(settings, "extra")
 	if mode == nil || mode.Value != "live" || list == nil || list.Kind != yaml.SequenceNode {
+		return nil, nil, nil
+	}
+	var policy registry.ModelDiscovery
+	if errDecode := settings.Decode(&policy); errDecode != nil {
+		return nil, nil, errDecode
+	}
+	if !policy.RetirementEnabled() {
 		return nil, nil, nil
 	}
 	kept := list.Content[:0]

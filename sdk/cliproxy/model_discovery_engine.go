@@ -71,7 +71,10 @@ func (a *discoveryAccount) record(list []discoveredModel, err error, now time.Ti
 		}
 	}
 	for id, row := range a.rows {
-		if !seen[id] && covered(row.Model) {
+		if seen[id] {
+			continue
+		}
+		if covered != nil && covered(row.Model) {
 			row.Misses = min(row.Misses+1, 3)
 			if row.Misses == 3 && now.Sub(row.LastSeen) >= modelDiscoveryRetirementFloor {
 				delete(a.rows, id)
@@ -79,6 +82,9 @@ func (a *discoveryAccount) record(list []discoveredModel, err error, now time.Ti
 			} else {
 				a.rows[id] = row
 			}
+		} else if row.Misses != 0 {
+			row.Misses = 0
+			a.rows[id] = row
 		}
 	}
 	return retired
@@ -317,13 +323,14 @@ func discoveryAccountDone(account *discoveryAccount) <-chan struct{} {
 	return nil
 }
 
-func (s *Service) invalidateDiscoveryAccount(id string) {
+func (s *Service) invalidateDiscoveryAccount(id string, removedCacheKeys ...string) {
 	if s == nil || s.coreManager == nil {
 		return
 	}
 	s.initModelDiscovery()
 	d := &s.modelDiscovery
 	d.mu.Lock()
+	cacheChanged := false
 	account := d.accounts[id]
 	if account != nil && !s.discoveryAccountCurrent(id, account) {
 		account.cancel()
@@ -332,8 +339,23 @@ func (s *Service) invalidateDiscoveryAccount(id string) {
 		cfg := s.currentConfig()
 		if channel := discoveryChannelForAuth(auth); channel == "" || discoveryKey(cfg, auth, channel) != account.key {
 			delete(d.cache, account.key)
-			s.persistDiscoveryCacheLocked()
+			cacheChanged = true
 		}
+	}
+	if len(removedCacheKeys) != 0 {
+		// A removal can land after loading last-good but before scheduling the
+		// account. Do not erase the cache of a concurrently re-added credential.
+		if _, exists := s.coreManager.GetByID(id); !exists {
+			for _, key := range removedCacheKeys {
+				if _, exists := d.cache[key]; exists {
+					delete(d.cache, key)
+					cacheChanged = true
+				}
+			}
+		}
+	}
+	if cacheChanged {
+		s.persistDiscoveryCacheLocked()
 	}
 	d.mu.Unlock()
 	s.wakeModelDiscovery()
@@ -358,14 +380,19 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 		return
 	}
 	now := modelDiscoveryNow()
-	previous := d.cache[account.key]
-	retired := account.record(list, errFetch, now, func(row discoveredModel) bool {
-		kind := catalogKinds[row.ID]
-		if kind == "" {
-			kind = inventoryModelKind(&ModelInfo{DiscoveryKind: row.Kind})
+	settings := discoverySettings(s.currentConfig(), channel)
+	var covered func(discoveredModel) bool
+	if account.mode != "live" || settings.RetirementEnabled() {
+		covered = func(row discoveredModel) bool {
+			kind := catalogKinds[row.ID]
+			if kind == "" {
+				kind = inventoryModelKind(&ModelInfo{DiscoveryKind: row.Kind})
+			}
+			return discoveryListingCovers(channel, kind)
 		}
-		return discoveryListingCovers(channel, kind)
-	})
+	}
+	previous := d.cache[account.key]
+	retired := account.record(list, errFetch, now, covered)
 	if account.rows != nil && !reflect.DeepEqual(previous, account.rows) {
 		d.cache[account.key] = maps.Clone(account.rows)
 		d.dirty = true
@@ -405,12 +432,14 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 		routesChanged = previous == nil || !maps.EqualFunc(previous, account.rows, func(a, b discoveryRow) bool {
 			return reflect.DeepEqual(a.Model, b.Model)
 		})
+	}
+	if account.mode == "live" && settings.RetirementEnabled() {
 		removeExtras = account.pendingExtras
 		sighted := make(map[string]bool, len(list))
 		for _, row := range list {
 			sighted[strings.TrimSpace(row.ID)] = true
 		}
-		for _, id := range discoverySettings(s.currentConfig(), channel).Extra {
+		for _, id := range settings.Extra {
 			id = strings.TrimSpace(id)
 			if sighted[id] {
 				if removeExtras == nil {
@@ -425,6 +454,8 @@ func (s *Service) fetchDiscoveryAccount(ctx context.Context, cfg *config.Config,
 			}
 		}
 		account.pendingExtras = removeExtras
+	} else {
+		account.pendingExtras = nil
 	}
 	d.mu.Unlock()
 
@@ -472,12 +503,16 @@ func (s *Service) logShadowDiscoveryDiff(id, channel string, account *discoveryA
 	}
 	missing := slices.Sorted(maps.Keys(covered))
 	slices.Sort(added)
-	diff := fmt.Sprintf("%d/%d/%q/%q", len(listed), len(served), added, missing)
+	var policy string
+	if !discoverySettings(s.currentConfig(), channel).RetirementEnabled() {
+		policy = " (add-only)"
+	}
+	diff := fmt.Sprintf("%d/%d/%q/%q%s", len(listed), len(served), added, missing, policy)
 	d := &s.modelDiscovery
 	d.mu.Lock()
 	if d.accounts[id] == account && diff != account.shadowDiff {
-		log.Infof("model discovery shadow channel=%s discovered=%d served=%d added=%d %s missing=%d %s",
-			channel, len(listed), len(served), len(added), formatDiscoveryDiffIDs(added), len(missing), formatDiscoveryDiffIDs(missing))
+		log.Infof("model discovery shadow channel=%s discovered=%d served=%d added=%d %s missing=%d %s%s",
+			channel, len(listed), len(served), len(added), formatDiscoveryDiffIDs(added), len(missing), formatDiscoveryDiffIDs(missing), policy)
 		account.shadowDiff = diff
 	}
 	d.mu.Unlock()
