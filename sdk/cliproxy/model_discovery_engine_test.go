@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -17,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelinventory"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
@@ -354,6 +356,146 @@ func TestDiscoveryCodexLivePreservesCatalogMetadata(t *testing.T) {
 			}
 			if got := inventory[reserve].Get("limits.context").Int(); got != 123456 {
 				t.Errorf("reserve inventory effective context = %d, want 123456", got)
+			}
+		})
+	}
+}
+
+func TestDiscoveryOpenCodeInventoryUsesProviderMetadata(t *testing.T) {
+	body, err := os.ReadFile("testdata/opencode-go-models.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+	cfg := &config.Config{}
+	cfg.Models.Discovery = map[string]registry.ModelDiscovery{"opencode-go": {Mode: "live"}}
+	s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+	registerDiscoveryEngineTestAuth(t, s, "codex")
+	credential := discoveryTestAuth(t, "opencode-go", upstream.URL, "/inference/go/v1/models")
+	credential.ID = "discovery-credential-opencode-go"
+	auth, err := s.coreManager.Register(t.Context(), credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { GlobalModelRegistry().UnregisterClient(auth.ID) })
+	read := false
+	tick := discoveryTestRunner(t, s, auth, func(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) ([]discoveredModel, error) {
+		if !read {
+			// Keep the shared Luna routes registered as they were before
+			// Go's discovery learned to read limits and reasoning.
+			return []discoveredModel{
+				{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna"},
+				{ID: "gpt-6-luna", DisplayName: "GPT-6 Luna"},
+			}, nil
+		}
+		return fetchDiscoveryOpenCode(ctx, cfg, auth)
+	})
+	handler := openai.NewOpenAIAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, s.coreManager))
+	router := gin.New()
+	router.GET("/v1/models", handler.OpenAIModels)
+	getLuna := func() []string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/models?client_version=0.159.0", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("Codex list HTTP %d", recorder.Code)
+		}
+		var luna []string
+		for _, row := range ojson.ParseBytes(recorder.Body.Bytes()).Get("models").Array() {
+			if slug := row.Get("slug").String(); slug == "gpt-5.6-luna" || slug == "gpt-6-luna" {
+				luna = append(luna, row.Raw)
+			}
+		}
+		if len(luna) != 2 {
+			t.Fatalf("Codex list has %d Luna rows, want 2", len(luna))
+		}
+		return luna
+	}
+	tick()
+	before := getLuna()
+	read = true
+	tick()
+	if after := getLuna(); !slices.Equal(after, before) {
+		t.Errorf("Go provider metadata changed the shared templated Codex Luna rows\nbefore: %v\nafter: %v", before, after)
+	}
+
+	candidates := make(map[string]modelinventory.Candidate)
+	for _, candidate := range s.InventoryCandidates() {
+		if candidate.Channel == "opencode-go" {
+			candidates[candidate.ID] = candidate
+		}
+	}
+	for _, tc := range []struct {
+		id, family string
+		limits     modelinventory.Limits
+		efforts    []string
+	}{
+		{"gpt-5.6-luna", "gpt-luna", modelinventory.Limits{Context: 1050000, Input: 922000, Output: 128000}, []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{"gpt-6-luna", "gpt-luna", modelinventory.Limits{Context: 1050000, Input: 922000, Output: 128000}, []string{"none", "low", "medium", "high", "xhigh", "max"}},
+		{"muse-spark-1.3-contributor", "muse", modelinventory.Limits{Context: 1048576, Output: 131072}, []string{"minimal", "low", "medium", "high", "xhigh"}},
+		{"kimi-k3.1-pro", "kimi-k3", modelinventory.Limits{Context: 1048576, Output: 1048576}, []string{"low", "high", "max"}},
+		{"gemini-4-argon", "gemini", modelinventory.Limits{Context: 1048576, Output: 65536}, []string{"low", "medium", "high"}},
+	} {
+		got := candidates[tc.id]
+		if !got.Published || got.Kind != "chat" || got.Family != tc.family || got.Limits != tc.limits || !slices.Equal(got.Efforts, tc.efforts) {
+			t.Errorf("%s: inventory limits=%+v efforts=%v family=%q kind=%q published=%v; want %+v, %v, %q, chat, true",
+				tc.id, got.Limits, got.Efforts, got.Family, got.Kind, got.Published, tc.limits, tc.efforts, tc.family)
+		}
+	}
+	for _, model := range GlobalModelRegistry().GetModelsForClient(auth.ID) {
+		if model.ID == "kimi-k3.1-pro" && model.DiscoveryDefaultEffort != "max" {
+			t.Errorf("Kimi default effort = %q, want max", model.DiscoveryDefaultEffort)
+		}
+	}
+}
+
+func TestDiscoveryInventoryAndRegistryClampLimits(t *testing.T) {
+	auth := &coreauth.Auth{ID: "discovery-limit-test"}
+	catalog := &ModelInfo{ID: "limit-fixture", ContextLength: 200, InputTokenLimit: 180, MaxCompletionTokens: 160,
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low"}, Max: 100}, DiscoveryDefaultEffort: "low"}
+	for _, tc := range []struct {
+		name        string
+		base        *ModelInfo
+		provider    discoveredModel
+		limits      modelinventory.Limits
+		maxComplete int
+		efforts     []string
+		wantDefault string
+	}{
+		{"same source", catalog, discoveredModel{ID: catalog.ID, ContextTokens: 100, InputTokens: 130, OutputTokens: 110, Efforts: []string{"high"}},
+			modelinventory.Limits{Context: 100, Input: 100, Output: 100}, 100, []string{"high"}, "low"},
+		{"mixed sources", catalog, discoveredModel{ID: catalog.ID, ContextTokens: 120, DefaultEffort: "high"},
+			modelinventory.Limits{Context: 120, Input: 120, Output: 120}, 120, []string{"low"}, "high"},
+		{"context missing", &ModelInfo{ID: catalog.ID}, discoveredModel{ID: catalog.ID, OutputTokens: 130},
+			modelinventory.Limits{Output: 130}, 130, nil, ""},
+		{"static only", &ModelInfo{ID: catalog.ID, ContextLength: 100, InputTokenLimit: 130, OutputTokenLimit: 140, MaxCompletionTokens: 150}, discoveredModel{},
+			modelinventory.Limits{Context: 100, Input: 100, Output: 100}, 100, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := discoveryModelInfo("zai", tc.base, tc.provider, false)
+			models := []*ModelInfo{model}
+			got := inventoryCandidates(nil, auth, "zai", models, inventoryModelRules{})[0]
+			if got.Limits != tc.limits || !slices.Equal(got.Efforts, tc.efforts) {
+				t.Errorf("inventory limits=%+v efforts=%v; want %+v, %v", got.Limits, got.Efforts, tc.limits, tc.efforts)
+			}
+			reg := GlobalModelRegistry()
+			reg.RegisterClient(auth.ID, "zai", models)
+			t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
+			info := reg.GetModelsForClient(auth.ID)[0]
+			output := info.OutputTokenLimit
+			if output == 0 {
+				output = info.MaxCompletionTokens
+			}
+			limits := modelinventory.Limits{Context: int64(info.ContextLength), Input: int64(info.InputTokenLimit), Output: int64(output)}
+			if limits != tc.limits || info.MaxCompletionTokens != tc.maxComplete || info.DiscoveryDefaultEffort != tc.wantDefault {
+				t.Errorf("registry limits=%+v max completion=%d default=%q; want %+v, %d, %q",
+					limits, info.MaxCompletionTokens, info.DiscoveryDefaultEffort, tc.limits, tc.maxComplete, tc.wantDefault)
+			}
+			if tc.base.Thinking != nil && (info.Thinking == nil || info.Thinking.Max != tc.base.Thinking.Max) {
+				t.Error("provider efforts overwrote the catalog reasoning budget")
 			}
 		})
 	}

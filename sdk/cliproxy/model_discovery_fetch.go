@@ -243,14 +243,33 @@ func fetchDiscoveryOpenCode(ctx context.Context, cfg *config.Config, auth *corea
 	if err != nil {
 		return nil, err
 	}
-	return parseDiscoveryRows(page, channel, "data", "id", func(row ojson.Result, model *discoveredModel) {
-		if model.DisplayName == "" {
-			model.DisplayName = discoveryString(row.Get("name"))
+	models, err := parseDiscoveryRows(page, channel, "data", "id", func(row ojson.Result, model *discoveredModel) {
+		if name := discoveryString(row.Get("name")); name != "" {
+			model.DisplayName = name
 		}
-		model.ContextTokens = discoveryNumber(row.Get("limits.context"))
-		model.InputTokens = discoveryNumber(row.Get("limits.input"))
-		model.OutputTokens = discoveryNumber(row.Get("limits.output"))
+		if kind := discoveryString(row.Get("type")); kind != "" {
+			model.Kind = kind
+		}
+		model.ContextTokens = discoveryNumber(row.Get("limit.context"))
+		model.InputTokens = discoveryNumber(row.Get("limit.input"))
+		model.OutputTokens = discoveryNumber(row.Get("limit.output"))
+		reasoning := row.Get("capabilities.reasoning")
+		model.Efforts = discoveryLabels(reasoning.Get("effort"), "", nil)
+		if discoveryString(reasoning.Get("default.type")) == "effort" {
+			model.DefaultEffort = discoveryString(reasoning.Get("default.value"))
+		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(models))
+	return slices.DeleteFunc(models, func(model discoveredModel) bool {
+		if seen[model.ID] {
+			return true
+		}
+		seen[model.ID] = true
+		return false
+	}), nil
 }
 
 func fetchDiscoveryClaude(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) ([]discoveredModel, error) {

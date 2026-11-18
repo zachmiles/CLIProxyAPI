@@ -240,26 +240,10 @@ func discoveryModelInfo(channel string, model *ModelInfo, row discoveredModel, c
 	if row.Family != "" {
 		out.DiscoveryFamily = row.Family
 	}
-	if row.ContextTokens > 0 {
-		out.ContextLength = int(row.ContextTokens)
-		if out.MaxContextLength > 0 {
-			out.MaxContextLength = out.ContextLength
-		}
-	}
-	if row.InputTokens > 0 {
-		out.InputTokenLimit = int(row.InputTokens)
-	}
-	if row.OutputTokens > 0 {
-		out.OutputTokenLimit = int(row.OutputTokens)
-		out.MaxCompletionTokens = out.OutputTokenLimit
-	}
-	if len(row.Efforts) != 0 {
-		thinking := registry.ThinkingSupport{}
-		if out.Thinking != nil {
-			thinking = *out.Thinking
-		}
-		thinking.Levels = slices.Clone(row.Efforts)
-		out.Thinking = &thinking
+	applyDiscoveryLimitsAndEfforts(&out, row)
+	// Go can serve the same slug as a Codex template. Keep the Go levels in
+	// inventory and registry, but don't make them a Codex client override.
+	if len(row.Efforts) != 0 && !(channel == "opencode-go" && registry.HasCodexClientModelTemplate(modelUpstreamID(model))) {
 		out.ExplicitThinking = true
 	}
 	if row.ServiceTiers != nil {
@@ -269,6 +253,37 @@ func discoveryModelInfo(channel string, model *ModelInfo, row discoveredModel, c
 		out.Created = row.Created
 	}
 	return &out
+}
+
+func applyDiscoveryLimitsAndEfforts(model *ModelInfo, row discoveredModel) {
+	// Resolve provenance per field: the provider's context wins over catalog
+	// context, and missing provider limits keep their catalog values. Both
+	// publication paths then cap known input/output to the resolved context,
+	// whether the fields came from the same source or from different sources.
+	if row.ContextTokens > 0 {
+		model.ContextLength = int(row.ContextTokens)
+		if model.MaxContextLength > 0 {
+			model.MaxContextLength = model.ContextLength
+		}
+	}
+	if row.InputTokens > 0 {
+		model.InputTokenLimit = int(row.InputTokens)
+	}
+	if row.OutputTokens > 0 {
+		model.OutputTokenLimit = int(row.OutputTokens)
+		model.MaxCompletionTokens = model.OutputTokenLimit
+	}
+	if len(row.Efforts) != 0 {
+		thinking := registry.ThinkingSupport{}
+		if model.Thinking != nil {
+			thinking = *model.Thinking
+		}
+		thinking.Levels = slices.Clone(row.Efforts)
+		model.Thinking = &thinking
+	}
+	if row.DefaultEffort != "" {
+		model.DiscoveryDefaultEffort = row.DefaultEffort
+	}
 }
 
 func codexDiscoveryModelInfo(model ModelInfo, row discoveredModel) *ModelInfo {
@@ -293,20 +308,7 @@ func codexDiscoveryModelInfo(model ModelInfo, row discoveredModel) *ModelInfo {
 	if model.DisplayName == "" || model.Discovery && model.DisplayName == model.ID && row.DisplayName != "" {
 		model.DisplayName = row.DisplayName
 	}
-	if model.ContextLength == 0 {
-		model.ContextLength = int(row.ContextTokens)
-	}
-	if model.InputTokenLimit == 0 {
-		model.InputTokenLimit = int(row.InputTokens)
-	}
-	if model.OutputTokenLimit == 0 && model.MaxCompletionTokens == 0 {
-		model.OutputTokenLimit = int(row.OutputTokens)
-		model.MaxCompletionTokens = model.OutputTokenLimit
-	}
-	if model.Thinking == nil && len(row.Efforts) != 0 {
-		model.Thinking = &registry.ThinkingSupport{Levels: slices.Clone(row.Efforts)}
-		model.DiscoveryDefaultEffort = row.DefaultEffort
-	}
+	applyDiscoveryLimitsAndEfforts(&model, row)
 	if model.Created == 0 {
 		model.Created = row.Created
 	}

@@ -286,14 +286,15 @@ func inventoryCandidates(cfg *config.Config, auth *coreauth.Auth, channel string
 		if original, ok := prefixed[model.ID]; ok {
 			unprefixed = original
 		}
+		input, output, completion := model.BoundedTokenLimits()
+		if output == 0 {
+			output = completion
+		}
 		candidate := modelinventory.Candidate{
 			Channel: channel, ID: model.ID, RuleID: rawIDs[unprefixed],
 			Name: model.DisplayName, Kind: kind, Family: model.DiscoveryFamily,
-			Limits:        modelinventory.Limits{Context: int64(model.ContextLength), Input: int64(model.InputTokenLimit), Output: int64(model.OutputTokenLimit)},
+			Limits:        modelinventory.Limits{Context: int64(model.ContextLength), Input: int64(input), Output: int64(output)},
 			CredentialKey: key, CredentialRules: rules.credential,
-		}
-		if candidate.Limits.Output == 0 {
-			candidate.Limits.Output = int64(model.MaxCompletionTokens)
 		}
 		if model.Thinking != nil {
 			candidate.Efforts = slices.Clone(model.Thinking.Levels)

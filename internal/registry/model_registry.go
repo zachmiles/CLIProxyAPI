@@ -120,6 +120,23 @@ type ModelInfo struct {
 	IsCompat bool `json:"-"`
 }
 
+// BoundedTokenLimits returns the reported input and output limits capped by
+// the known context. Zero (unknown) limits stay zero.
+func (m *ModelInfo) BoundedTokenLimits() (input, output, completion int) {
+	input, output, completion = m.InputTokenLimit, m.OutputTokenLimit, m.MaxCompletionTokens
+	context := m.ContextLength
+	if context <= 0 {
+		context = m.MaxContextLength
+	}
+	if context <= 0 {
+		context = m.DiscoveryMaxContext
+	}
+	if context > 0 {
+		input, output, completion = min(input, context), min(output, context), min(completion, context)
+	}
+	return
+}
+
 // ModelConfig holds optional runtime overrides for a model definition.
 type ModelConfig struct {
 	// OverrideHeader forces upstream request headers when non-empty.
@@ -576,7 +593,7 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 		// Store client's own model infos
 		clientInfos := make(map[string]*ModelInfo, len(newModels))
 		for id, m := range newModels {
-			clientInfos[id] = cloneModelInfo(m)
+			clientInfos[id] = cloneRegisteredModelInfo(m)
 		}
 		r.clientModelInfos[clientID] = clientInfos
 		if provider != "" {
@@ -684,14 +701,14 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 		model := newModels[id]
 		if reg, ok := r.models[id]; ok {
 			hasWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(id, "", clientID)
-			reg.Info = cloneModelInfo(model)
+			reg.Info = cloneRegisteredModelInfo(model)
 			reg.Info.SupportsWebSearch = hasWebSearch
 			if provider != "" {
 				if reg.InfoByProvider == nil {
 					reg.InfoByProvider = make(map[string]*ModelInfo)
 				}
 				hasProvWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(id, provider, clientID)
-				reg.InfoByProvider[provider] = cloneModelInfo(model)
+				reg.InfoByProvider[provider] = cloneRegisteredModelInfo(model)
 				reg.InfoByProvider[provider].SupportsWebSearch = hasProvWebSearch
 			}
 			if providerChanged && oldProvider != "" && reg.InfoByProvider != nil && reg.InfoByProvider[oldProvider] != nil {
@@ -733,7 +750,7 @@ func (r *ModelRegistry) registerClientLocked(clientID, clientProvider string, mo
 	// Update client's own model infos
 	clientInfos := make(map[string]*ModelInfo, len(newModels))
 	for id, m := range newModels {
-		clientInfos[id] = cloneModelInfo(m)
+		clientInfos[id] = cloneRegisteredModelInfo(m)
 	}
 	r.clientModelInfos[clientID] = clientInfos
 	if provider != "" {
@@ -762,7 +779,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 		existing.Count++
 		existing.LastUpdated = now
 		hasWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(modelID, "", excludeClientID)
-		existing.Info = cloneModelInfo(model)
+		existing.Info = cloneRegisteredModelInfo(model)
 		existing.Info.SupportsWebSearch = hasWebSearch
 		if existing.SuspendedClients == nil {
 			existing.SuspendedClients = make(map[string]string)
@@ -776,7 +793,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 			}
 			existing.Providers[provider]++
 			hasProvWebSearch := model.SupportsWebSearch || r.hasClientSupportingWebSearchLocked(modelID, provider, excludeClientID)
-			existing.InfoByProvider[provider] = cloneModelInfo(model)
+			existing.InfoByProvider[provider] = cloneRegisteredModelInfo(model)
 			existing.InfoByProvider[provider].SupportsWebSearch = hasProvWebSearch
 		}
 		log.Debugf("Incremented count for model %s, now %d clients", modelID, existing.Count)
@@ -784,7 +801,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 	}
 
 	registration := &ModelRegistration{
-		Info:                 cloneModelInfo(model),
+		Info:                 cloneRegisteredModelInfo(model),
 		InfoByProvider:       make(map[string]*ModelInfo),
 		Count:                1,
 		LastUpdated:          now,
@@ -793,7 +810,7 @@ func (r *ModelRegistry) addModelRegistration(modelID, provider string, model *Mo
 	}
 	if provider != "" {
 		registration.Providers = map[string]int{provider: 1}
-		registration.InfoByProvider[provider] = cloneModelInfo(model)
+		registration.InfoByProvider[provider] = cloneRegisteredModelInfo(model)
 	}
 	r.models[modelID] = registration
 	log.Debugf("Registered new model %s from provider %s", modelID, provider)
@@ -838,6 +855,14 @@ func (r *ModelRegistry) removeModelRegistration(clientID, modelID, provider stri
 			registration.InfoByProvider[provider].SupportsWebSearch = r.hasClientSupportingWebSearchLocked(modelID, provider, clientID)
 		}
 	}
+}
+
+// Bound resolved metadata only when publishing, not while copying catalog
+// inputs that may still be merged with a different context.
+func cloneRegisteredModelInfo(model *ModelInfo) *ModelInfo {
+	clone := cloneModelInfo(model)
+	clone.InputTokenLimit, clone.OutputTokenLimit, clone.MaxCompletionTokens = model.BoundedTokenLimits()
+	return clone
 }
 
 func cloneModelInfo(model *ModelInfo) *ModelInfo {
@@ -905,7 +930,7 @@ func cloneModelInfosUnique(models []*ModelInfo) []*ModelInfo {
 			continue
 		}
 		seen[model.ID] = struct{}{}
-		cloned = append(cloned, cloneModelInfo(model))
+		cloned = append(cloned, cloneRegisteredModelInfo(model))
 	}
 	return cloned
 }

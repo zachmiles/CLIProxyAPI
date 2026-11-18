@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,10 @@ import (
 )
 
 func TestDiscoveryFetchListings(t *testing.T) {
+	goListing, err := os.ReadFile("testdata/opencode-go-models.json")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		channel string
 		path    string
@@ -45,12 +50,13 @@ func TestDiscoveryFetchListings(t *testing.T) {
 		{
 			channel: "opencode-go", path: "/inference/go/v1/models",
 			headers: map[string]string{"X-Opencode-Org-Id": "org-1"},
-			body: `{"object":"list","data":[{"id":"glm-5","name":"GLM 5","kind":"chat","family":"glm",
-				"limits":{"context":202752,"input":170000,"output":32768},"capabilities":{"reasoning":true,"tool_call":true}},
-				{"id":"image-gen-1","kind":"image","limits":{"output":1}}]}`,
+			body:    string(goListing),
 			want: []discoveredModel{
-				{ID: "glm-5", DisplayName: "GLM 5", Kind: "chat", Family: "glm", ContextTokens: 202752, InputTokens: 170000, OutputTokens: 32768},
-				{ID: "image-gen-1", Kind: "image", OutputTokens: 1},
+				{ID: "muse-spark-1.3-contributor", DisplayName: "Muse Spark 1.3 Contributor", Kind: "chat", Family: "muse", ContextTokens: 1048576, OutputTokens: 131072, Efforts: []string{"minimal", "low", "medium", "high", "xhigh"}, Created: 1794964535},
+				{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", Kind: "chat", Family: "gpt-luna", ContextTokens: 1050000, InputTokens: 922000, OutputTokens: 128000, Efforts: []string{"none", "low", "medium", "high", "xhigh", "max"}, Created: 1794964535},
+				{ID: "gpt-6-luna", DisplayName: "GPT-6 Luna", Kind: "chat", Family: "gpt-luna", ContextTokens: 1050000, InputTokens: 922000, OutputTokens: 128000, Efforts: []string{"none", "low", "medium", "high", "xhigh", "max"}, Created: 1794964535},
+				{ID: "kimi-k3.1-pro", DisplayName: "Kimi K3.1 Pro", Kind: "chat", Family: "kimi-k3", ContextTokens: 1048576, OutputTokens: 1048576, Efforts: []string{"low", "high", "max"}, DefaultEffort: "max", Created: 1794964535},
+				{ID: "gemini-4-argon", DisplayName: "Gemini 4 Argon", Kind: "chat", Family: "gemini", ContextTokens: 1048576, OutputTokens: 65536, Efforts: []string{"low", "medium", "high"}, Created: 1794964535},
 			},
 		},
 		{
@@ -118,6 +124,22 @@ func TestDiscoveryFetchListings(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestDiscoveryFetchOpenCodeKeepsFirstDuplicate(t *testing.T) {
+	const path = "/inference/go/v1/models"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"z","name":"First","type":"chat","capabilities":{"reasoning":{"effort":["high","low","high"]}}},{"id":"a","type":"image"},{"id":"z","name":"Duplicate"}]}`)
+	}))
+	defer srv.Close()
+	got, err := fetchDiscoveryOpenCode(t.Context(), nil, discoveryTestAuth(t, "opencode-go", srv.URL, path))
+	want := []discoveredModel{
+		{ID: "z", DisplayName: "First", Kind: "chat", Efforts: []string{"high", "low"}},
+		{ID: "a", Kind: "image"},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got (%+v, %v), want (%+v, nil)", got, err, want)
 	}
 }
 
